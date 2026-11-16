@@ -11,6 +11,8 @@ CAF-aligned Azure Landing Zone. **Terraform** builds the infrastructure,
 - Writes one log file per sender to an encrypted data disk, and forwards to **Log Analytics / Microsoft Sentinel** through the Azure Monitor Agent (AMA) and a Data Collection Rule
 - No secrets in code, state or extension payloads. The TLS certificate comes from **Key Vault** through the VM's **managed identity**
 
+**New here? Follow the [step-by-step deployment guide](#step-by-step-deployment-guide-azure-cloud-shell).**
+
 ---
 
 ## Architecture
@@ -149,94 +151,399 @@ same revision to correct drift.
 
 ---
 
-## Deploy from Azure Cloud Shell (bash)
+## Step-by-step deployment guide (Azure Cloud Shell)
 
+Do the steps in order. Each step says **what** to do, **why**, and **how to check it worked**.
+Replace placeholder values (`<...>`, `contoso`, example IDs) with your own.
+
+### Step 1: Open Azure Cloud Shell
+
+1. Sign in to the [Azure portal](https://portal.azure.com) with an account that has the permissions listed in [Prerequisites](#prerequisites).
+2. Click the **Cloud Shell** icon (`>_`) in the top bar, or go to <https://shell.azure.com>.
+3. Choose **Bash** (not PowerShell).
+4. When asked about storage, choose **Mount storage account** so `~/` (your SSH key, the repo and `terraform.tfvars`) survives between sessions. An ephemeral session works, but you lose everything when it closes.
+
+**Check:** the prompt looks like `you@Azure:~$` and these all print a version:
 ```bash
-# 0. Get the code (Cloud Shell persists $HOME on your clouddrive)
-git clone https://github.com/mylesagnew/azure-syslog.git
-cd azure-syslog/terraform
+az version --query '"azure-cli"' -o tsv
+```
+```bash
+terraform version
+```
+```bash
+gh --version
 ```
 
+> Cloud Shell disconnects after about **20 minutes without keyboard input**. `terraform apply` takes 10 to 20 minutes, so keep the tab in front and press a key now and then. State is stored remotely, so an interrupted apply is safe to re-run (see [Troubleshooting](#troubleshooting)).
+
+### Step 2: Get the code
+
+The repository is private, so first sign Cloud Shell in to GitHub:
+
 ```bash
-# 1. Authentication. Cloud Shell is already signed in as you; pick the workload subscription.
-az account show -o table
+gh auth login --hostname github.com --git-protocol https --web
+```
+Follow the device-code prompt, then clone:
+```bash
+gh repo clone mylesagnew/azure-syslog ~/azure-syslog
+```
+```bash
+cd ~/azure-syslog/terraform
+```
+
+**Check:** `ls` shows `main.tf`, `variables.tf`, `terraform.tfvars.example` and the other Terraform files.
+
+### Step 3: Select the subscription that will host the collectors
+
+Cloud Shell is already signed in as you, so you do not need `az login`.
+
+```bash
+az account list --query "[].{name:name, id:id, isDefault:isDefault}" -o table
+```
+```bash
 az account set --subscription "<workload-subscription-id>"
 ```
 
-To run as a service principal instead (for example, to match pipeline permissions):
+This is the **workload** subscription (shared services, identity or management, depending on your Landing Zone design).
+
+To deploy as a service principal instead (for example to use exactly the permissions a pipeline will have), export these before running Terraform:
 ```bash
-export ARM_CLIENT_ID=... ARM_TENANT_ID=... ARM_SUBSCRIPTION_ID=... ARM_CLIENT_SECRET=...   # or use OIDC/MI in CI
+export ARM_TENANT_ID="<tenant-id>" ARM_SUBSCRIPTION_ID="<workload-subscription-id>" ARM_CLIENT_ID="<app-id>" ARM_CLIENT_SECRET="<secret>"
 ```
 
+**Check:**
 ```bash
-# 2. Admin SSH key (public half goes to the VM; private stays in Cloud Shell)
+az account show --query "{name:name, id:id, user:user.name}" -o table
+```
+
+### Step 4: Check your permissions
+
+```bash
+az role assignment list --assignee "$(az ad signed-in-user show --query id -o tsv)" --all --query "[].{role:roleDefinitionName, scope:scope}" -o table
+```
+
+Compare the output with [Prerequisites](#prerequisites). The ones most often missing are:
+- subnet **join** rights in the connectivity subscription
+- **Private DNS Zone Contributor** on the zone
+- rights to create **role assignments** (Key Vault Secrets User for the VM identity)
+
+Ask the platform team for anything missing **before** you continue. A failure halfway through an apply is harder to unpick.
+
+### Step 5: Register encryption at host (once per subscription)
+
+```bash
+az feature register --namespace Microsoft.Compute --name EncryptionAtHost
+```
+Then wait until this prints `Registered` (usually a few minutes):
+```bash
+az feature show --namespace Microsoft.Compute --name EncryptionAtHost --query properties.state -o tsv
+```
+Then refresh the provider:
+```bash
+az provider register --namespace Microsoft.Compute
+```
+
+If you are not allowed to register features, set `encryption_at_host_enabled = false` in Step 10 and record this as an exception.
+
+### Step 6: Collect the Landing Zone details
+
+Run these lookups and write down the values; they all go into `terraform.tfvars` in Step 10. Use `--subscription` to point at the subscription that owns each resource.
+
+**a. Target VNet and subnet** (hub shared-services subnet or management spoke):
+```bash
+az network vnet list --subscription "<network-sub-id>" --query "[].{vnet:name, rg:resourceGroup, location:location}" -o table
+```
+```bash
+az network vnet subnet list --subscription "<network-sub-id>" -g "<vnet-rg>" --vnet-name "<vnet-name>" --query "[].{subnet:name, prefix:addressPrefix}" -o table
+```
+→ `vnet_name`, `vnet_resource_group_name`, `subnet_name`, `network_subscription_id`
+
+**b. Azure Bastion: subnet CIDR and SKU**
+```bash
+az network vnet subnet show --subscription "<network-sub-id>" -g "<hub-rg>" --vnet-name "<hub-vnet>" -n AzureBastionSubnet --query "addressPrefix || addressPrefixes[0]" -o tsv
+```
+```bash
+az network bastion list --subscription "<network-sub-id>" --query "[].{name:name, rg:resourceGroup, sku:sku.name, nativeClient:enableTunneling}" -o table
+```
+→ `ssh_allowed_source_cidrs`, `bastion_name`, `bastion_resource_group_name`.
+`az network bastion ssh` and `ansible_mode = "bastion_push"` need SKU **Standard** or **Premium** with `nativeClient = True`.
+
+**c. Private DNS zone** (connectivity subscription):
+```bash
+az network private-dns zone list --subscription "<dns-sub-id>" --query "[].{zone:name, rg:resourceGroup}" -o table
+```
+→ `private_dns_zone_name`, `private_dns_zone_resource_group_name`, `dns_subscription_id`
+
+**d. Log Analytics / Sentinel workspace** (management subscription):
+```bash
+az monitor log-analytics workspace list --subscription "<mgmt-sub-id>" --query "[].{name:name, rg:resourceGroup, location:location}" -o table
+```
+→ `log_analytics_workspace_name`, `log_analytics_workspace_resource_group_name`, `management_subscription_id`
+
+**e. Key Vault** (for the TLS certificate on 6514):
+```bash
+az keyvault list --query "[].{name:name, rg:resourceGroup, rbac:properties.enableRbacAuthorization}" -o table
+```
+```bash
+az keyvault show -n "<kv-name>" --query id -o tsv
+```
+→ `key_vault_id`. Set `key_vault_authorization` to `rbac` if `rbac` is `true`, otherwise to `access_policy`.
+
+**f. Syslog source ranges:** list every CIDR that will send logs: spokes, on-premises ranges over ExpressRoute or VPN, and NVA subnets. → `syslog_allowed_source_cidrs`
+
+**g. Check the region supports zones for the VM size:**
+```bash
+az vm list-skus -l australiaeast --size Standard_D2as_v5 --query "[0].locationInfo[0].zones" -o tsv
+```
+An empty result means no zones: set `zones = []` and an Availability Set is used instead.
+
+### Step 7: Create the admin SSH key
+
+```bash
 ssh-keygen -t rsa -b 4096 -f ~/.ssh/syslog_admin -N "" -C "syslog-lz-admin"
+```
+```bash
 export TF_VAR_admin_ssh_public_key="$(cat ~/.ssh/syslog_admin.pub)"
 ```
 
+The public key goes onto the VMs. The private key stays in your Cloud Shell home and never enters Terraform state.
+
+> Re-run the `export` line every time you open a **new** Cloud Shell session, or add it to `~/.bashrc`.
+
+### Step 8: Prepare remote state
+
+If the Landing Zone already has a Terraform state storage account, use it. Otherwise create one:
 ```bash
-# 3. Configuration
-cp backend.hcl.example backend.hcl
-cp terraform.tfvars.example terraform.tfvars
-code terraform.tfvars     # Cloud Shell editor - set subscriptions, VNet, CIDRs, workspace, Key Vault ...
+../scripts/bootstrap-state.sh "<mgmt-sub-id>" rg-tfstate-prd-aue-001 sttfstateprdaue001 australiaeast
 ```
 
+Then point the backend at it:
 ```bash
-# 4. Init / plan / apply
+cp backend.hcl.example backend.hcl
+```
+```bash
+code backend.hcl
+```
+Set `subscription_id`, `resource_group_name`, `storage_account_name`, `container_name` and `key`. Save with **Ctrl+S**.
+
+You need **Storage Blob Data Contributor** on the container. No storage keys are used.
+
+### Step 9: Provide the TLS certificate (skip if `enable_tls = false` or `tls_certificate_source = "selfsigned"`)
+
+The collector reads the certificate from Key Vault with its managed identity. The secret **must** be PEM (`application/x-pem-file`).
+
+**Option A: use your enterprise CA (recommended for production).** Issue a server certificate for `syslog.<your-zone>` plus each VM name, then import it as PEM into Key Vault under the name in `tls_keyvault_certificate_name` (default `syslog-collector-tls`).
+
+**Option B: create a self-issued, auto-renewing certificate with the CLI:**
+```bash
+KV="<kv-name>"; FQDN="syslog.internal.contoso.com"
+```
+```bash
+az keyvault certificate get-default-policy | jq --arg cn "CN=$FQDN" --arg dns "$FQDN" '.secretProperties.contentType="application/x-pem-file" | .x509CertificateProperties.subject=$cn | .x509CertificateProperties.subjectAlternativeNames={dnsNames:[$dns]} | .keyProperties.keySize=3072' > ~/syslog-cert-policy.json
+```
+```bash
+az keyvault certificate create --vault-name "$KV" -n syslog-collector-tls -p @~/syslog-cert-policy.json
+```
+
+**Option C:** set `tls_keyvault_generate_certificate = true` and Terraform creates the certificate. This only works if Cloud Shell can reach the vault's data plane. Most Landing Zone vaults are private-endpoint only, so Option B run from a network that can reach the vault, or Option A, is usually easier.
+
+**Check:**
+```bash
+az keyvault secret show --vault-name "$KV" -n syslog-collector-tls --query contentType -o tsv
+```
+It must print `application/x-pem-file`.
+
+### Step 10: Fill in `terraform.tfvars`
+
+```bash
+cp terraform.tfvars.example terraform.tfvars
+```
+```bash
+code terraform.tfvars
+```
+
+Work through the file top to bottom using the values from Step 6. The decisions that matter most:
+
+| Setting | Typical production value |
+|---|---|
+| `vm_count` / `enable_internal_load_balancer` | `2` / `true` for HA; `1` / `false` for a single collector |
+| `syslog_allowed_source_cidrs` | Only your real sender ranges. `0.0.0.0/0` is rejected |
+| `ssh_allowed_source_cidrs` | The AzureBastionSubnet prefix only |
+| `ansible_mode` | `cse` (no network path from Cloud Shell needed) |
+| `tls_certificate_source` | `keyvault` for 2 or more VMs, `selfsigned` for a lab |
+| `dcr_syslog_log_levels` | Start at `Notice` and above to control Log Analytics cost |
+| `tags` | Must include `Owner` and `CostCenter` |
+
+Save with **Ctrl+S** and close the editor with **Ctrl+Q**.
+
+### Step 11: Initialise and validate
+
+```bash
 terraform init -backend-config=backend.hcl
-terraform fmt -check && terraform validate
+```
+```bash
+terraform fmt -check -recursive && terraform validate
+```
+
+**Check:** `init` ends with *Terraform has been successfully initialized* and `validate` prints *The configuration is valid*.
+
+### Step 12: Plan and review
+
+```bash
 terraform plan -out tfplan
+```
+
+Read the plan before applying. Expect **only creates**, roughly per VM:
+- VM, NIC, OS disk, log disk and disk attachment
+- extensions (AMA, ansible-bootstrap)
+- DCR association, DNS record, role assignment, diagnostic settings
+
+Plus, shared by all VMs: the RG, NSG and rules, ASG, LB (if enabled) and DCR.
+
+Stop and investigate if the plan wants to **change or destroy** anything you did not expect. That would point to an existing Landing Zone resource being referenced wrongly.
+
+Precondition errors at this stage explain exactly which variable is missing (for example `key_vault_id is required when tls_certificate_source = keyvault`).
+
+### Step 13: Apply
+
+```bash
 terraform apply tfplan
 ```
 
+This takes about 10 to 20 minutes. The longest resource is `azurerm_virtual_machine_extension.ansible`: the VM installs packages and runs the playbook. To watch progress from a **second** Cloud Shell tab:
 ```bash
-# 5. Outputs: private IPs, DNS name, Bastion SSH commands, test commands
-terraform output
+az vm extension list -g rg-syslog-prd-aue-001 --vm-name vm-syslog-prd-aue-01 --query "[].{name:name, state:provisioningState}" -o table
 ```
 
+**Check:** the apply ends with `Apply complete!` and prints the outputs.
+
+### Step 14: Record the outputs
+
 ```bash
-# 6. Validate (runs on the VMs through the control plane - no network path needed)
+terraform output
+```
+```bash
+terraform output -raw syslog_endpoint_ip
+```
+```bash
+terraform output syslog_dns_name
+```
+
+Give the platform and security teams:
+- `syslog_dns_name`: what every sender should use
+- `collector_private_ips`
+- `application_security_group_id`: to use in hub firewall or subnet NSG rules
+
+### Step 15: Validate the collectors
+
+```bash
 ../scripts/validate.sh
 ```
 
-Expect `terraform apply` to take about 10 to 20 minutes. Most of that is the Custom Script Extension
-running apt and Ansible. If the extension fails, Terraform shows the error, and
-the full log is in `/var/log/syslog-lz-bootstrap.log` on the VM.
+For each VM this runs, through the Azure control plane:
+- rsyslog health and a config check
+- the 514/6514 listeners and the ufw rules
+- the log-disk mount
+- a UDP and TCP self-test
 
----
+**Check** that for every VM:
+- `rsyslog` shows `active`
+- there are listeners on `:514` (udp and tcp) and `:6514`
+- the `--- received` section shows **two** `lz-syslog-selftest` lines
+- `azuremonitoragent` shows `active`
 
-## Post-deployment validation
+### Step 16: Test from a real sender
 
-1. **Listeners and loopback test**: `../scripts/validate.sh`. It shows rsyslog status, the
-   514/6514 listeners, ufw rules, the log mount, and confirms that a UDP and a TCP test message
-   arrived under `/var/log/remote/`.
-2. **From a real source** inside `syslog_allowed_source_cidrs`:
-   ```bash
-   logger --server syslog.internal.contoso.com --port 514 --udp "lz-syslog-test udp"
-   logger --server syslog.internal.contoso.com --port 514 --tcp "lz-syslog-test tcp"
-   echo "<134>lz-syslog-test nc" | nc -u -w1 syslog.internal.contoso.com 514
-   openssl s_client -connect syslog.internal.contoso.com:6514 -brief </dev/null   # TLS handshake
-   ```
-   Or copy `scripts/test-syslog-client.sh` to the source host and run it.
-3. **On the collector** (Bastion SSH; the command is in `terraform output bastion_ssh_commands`):
-   ```bash
-   sudo ls /var/log/remote/
-   sudo tail -f /var/log/remote/<sender-ip>/syslog.log
-   sudo ss -lntup | grep -E ':(514|6514)'
-   ```
-4. **Log Analytics / Sentinel**. Allow 5 to 10 minutes for the first records:
-   ```kusto
-   Syslog
-   | where TimeGenerated > ago(30m)
-   | where SyslogMessage has "lz-syslog-test"
-   | project TimeGenerated, HostName, HostIP, Facility, SeverityLevel, SyslogMessage
-   ```
-   Test messages use facility `user` at level `notice`. The default `dcr_syslog_log_levels`
-   drops Debug and Info, so a message at those levels will not appear in Log Analytics,
-   although it is still written to disk.
-5. **AMA path**: on the VM, `ls /etc/rsyslog.d/10-azuremonitoragent*` and
-   `sudo ss -lntp | grep 28330`. Ansible reads AMA's port from that file. If AMA had not yet
-   received the DCR on the first run, re-run `terraform apply` or wait for the weekly converge timer.
+From any Linux host inside `syslog_allowed_source_cidrs`:
+```bash
+logger --server syslog.internal.contoso.com --port 514 --udp "lz-syslog-test udp"
+```
+```bash
+logger --server syslog.internal.contoso.com --port 514 --tcp "lz-syslog-test tcp"
+```
+```bash
+openssl s_client -connect syslog.internal.contoso.com:6514 -brief </dev/null
+```
+
+Or copy `scripts/test-syslog-client.sh` to that host and run it with the collector name as the argument.
+
+Then look on a collector. Connect with the command from `terraform output bastion_ssh_commands`, then:
+```bash
+sudo ls /var/log/remote/
+```
+```bash
+sudo grep -r "lz-syslog-test" /var/log/remote/
+```
+
+If nothing arrives, check in this order:
+1. the sender's own egress rules
+2. the subnet NSG (owned by the Landing Zone)
+3. the hub firewall
+4. this deployment's NIC NSG
+
+The NIC NSG and ufw only allow the CIDRs you listed.
+
+### Step 17: Confirm data in Log Analytics / Sentinel
+
+Allow 5 to 10 minutes after the first message, then in the workspace go to **Logs** and run:
+```kusto
+Syslog
+| where TimeGenerated > ago(30m)
+| where SyslogMessage has "lz-syslog-test"
+| project TimeGenerated, HostName, HostIP, Facility, SeverityLevel, SyslogMessage
+```
+
+In Sentinel, install the **Syslog** solution from the Content Hub (and **Common Event Format** if you set `dcr_cef_facilities`). The *Syslog via AMA* connector page will list the DCR `dcr-syslog-<env>-<region>-001`.
+
+`logger` sends at level `notice`. If you changed `dcr_syslog_log_levels` to `Warning` or higher, add `-p user.warning` to the test.
+
+### Step 18: Point your log sources at the collector
+
+**Linux (rsyslog)**: create `/etc/rsyslog.d/90-forward.conf` on the sender:
+```
+# TCP with a disk-assisted queue (survives collector restarts)
+*.* action(type="omfwd" target="syslog.internal.contoso.com" port="514" protocol="tcp"
+           queue.type="LinkedList" queue.filename="fwd" queue.saveOnShutdown="on"
+           action.resumeRetryCount="-1")
+```
+Then restart rsyslog:
+```bash
+sudo systemctl restart rsyslog
+```
+
+**Linux over TLS (6514)**: install `rsyslog-gnutls` on the sender and copy the collector's CA (or its self-issued certificate) to `/etc/rsyslog-ca.pem`. Then use:
+```
+global(DefaultNetstreamDriverCAFile="/etc/rsyslog-ca.pem")
+*.* action(type="omfwd" target="syslog.internal.contoso.com" port="6514" protocol="tcp"
+           StreamDriver="gtls" StreamDriverMode="1" StreamDriverAuthMode="x509/name"
+           StreamDriverPermittedPeers="syslog.internal.contoso.com")
+```
+
+**Network appliances / firewalls**: set the syslog server to `syslog.internal.contoso.com`, or to the IP from `syslog_endpoint_ip`, on UDP or TCP 514. For CEF, use the facility you set in `dcr_cef_facilities`.
+
+### Step 19: Day-2 changes
+
+| Task | How |
+|---|---|
+| Change rsyslog or hardening settings | Edit `ansible/` or `terraform.tfvars`, then `terraform plan -out tfplan && terraform apply tfplan`. The extension re-runs automatically |
+| Add a sender range | Append to `syslog_allowed_source_cidrs` and apply. Both the NSG and ufw are updated |
+| Scale out | Increase `vm_count` (and set `enable_internal_load_balancer = true`), then apply |
+| Pick up a renewed certificate now | On the VM: `sudo systemctl start syslog-lz-converge.service`. Otherwise the weekly timer does it |
+| Patch status | Azure Update Manager shows assessment results. Security updates install automatically |
+
+### Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---|---|
+| `init` fails with 403 on the state blob | You need **Storage Blob Data Contributor** on the state container |
+| Plan fails with `AuthorizationFailed` on the subnet, DNS zone or workspace | The wrong `*_subscription_id`, or missing read or join rights in that subscription |
+| `EncryptionAtHost` error on VM create | Step 5 has not finished, or the feature is blocked. Wait for `Registered` or set `encryption_at_host_enabled = false` |
+| `ansible-bootstrap` extension fails | On the VM, read `/var/log/syslog-lz-bootstrap.log`. From Cloud Shell: `az vm run-command invoke -g <rg> -n <vm> --command-id RunShellScript --scripts "tail -n 80 /var/log/syslog-lz-bootstrap.log"`. The most common cause is no egress to the Ubuntu mirrors through the hub firewall |
+| Key Vault task retries then fails | Role assignment still propagating (re-run `terraform apply`), the vault private endpoint is not resolvable from the subnet, or the secret is not PEM (see Step 9) |
+| No data in Log Analytics but files appear on disk | AMA has no egress to the `*.handler.control.monitor.azure.com` and `*.ods.opinsights.azure.com` endpoints (or your AMPLS), or the severity is below `dcr_syslog_log_levels` |
+| `Error acquiring the state lock` after a dropped Cloud Shell session | Confirm nobody else is running Terraform, then `terraform force-unlock <lock-id>` and re-run the plan and apply |
+| `az network bastion ssh` fails | Bastion must be Standard or Premium with native client support. Basic SKU works through the portal only |
+
 
 ---
 
