@@ -178,14 +178,8 @@ gh --version
 
 ### Step 2: Get the code
 
-The repository is private, so first sign Cloud Shell in to GitHub:
-
 ```bash
-gh auth login --hostname github.com --git-protocol https --web
-```
-Follow the device-code prompt, then clone:
-```bash
-gh repo clone mylesagnew/azure-syslog ~/azure-syslog
+git clone https://github.com/mylesagnew/azure-syslog.git ~/azure-syslog
 ```
 ```bash
 cd ~/azure-syslog/terraform
