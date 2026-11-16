@@ -1,0 +1,112 @@
+# {{ ansible_managed }}
+#
+# Central syslog collector.
+# All network inputs are bound to the "remote" ruleset, so remote events never
+# land in this host's own /var/log/syslog and are not double-processed by the
+# default ruleset.
+
+{% if rsyslog_tls_enabled %}
+global(
+  DefaultNetstreamDriverCAFile="{{ rsyslog_tls_ca_file if rsyslog_tls_ca_file | length > 0 else rsyslog_tls_dir ~ '/cert.pem' }}"
+  DefaultNetstreamDriverCertFile="{{ rsyslog_tls_dir }}/cert.pem"
+  DefaultNetstreamDriverKeyFile="{{ rsyslog_tls_dir }}/key.pem"
+)
+{% endif %}
+
+module(load="imudp" threads="{{ rsyslog_udp_threads }}" batchSize="128")
+module(load="imtcp" maxSessions="{{ rsyslog_tcp_max_sessions }}")
+
+#### Templates ####
+{% if rsyslog_remote_path_key == 'hostname' %}
+template(name="RemoteFilePath" type="string"
+         string="{{ rsyslog_remote_log_dir }}/%HOSTNAME:::secpath-replace%/syslog.log")
+{% else %}
+# FROMHOST-IP is the real sender (preserved through the Azure internal LB),
+# unlike HOSTNAME which the sender controls.
+template(name="RemoteFilePath" type="string"
+         string="{{ rsyslog_remote_log_dir }}/%FROMHOST-IP%/syslog.log")
+{% endif %}
+
+template(name="RemoteJson" type="list" option.jsonf="on") {
+  property(outname="timestamp"   name="timereported"        dateFormat="rfc3339" format="jsonf")
+  property(outname="received"    name="timegenerated"       dateFormat="rfc3339" format="jsonf")
+  property(outname="host"        name="hostname"            format="jsonf")
+  property(outname="fromhost_ip" name="fromhost-ip"         format="jsonf")
+  property(outname="facility"    name="syslogfacility-text" format="jsonf")
+  property(outname="severity"    name="syslogseverity-text" format="jsonf")
+  property(outname="program"     name="programname"         format="jsonf")
+  property(outname="procid"      name="procid"              format="jsonf")
+  property(outname="message"     name="msg"                 format="jsonf")
+}
+
+# RFC3164 forward format used towards the Azure Monitor Agent.
+template(name="AmaForwardFormat" type="string"
+         string="<%PRI%>%TIMESTAMP% %HOSTNAME% %syslogtag%%msg:::sp-if-no-1st-sp%%msg%")
+
+{% set file_template = {'traditional': 'RSYSLOG_FileFormat', 'rfc5424': 'RSYSLOG_SyslogProtocol23Format', 'json': 'RemoteJson'}[rsyslog_remote_file_format] %}
+#### Ruleset for everything received over the network ####
+ruleset(name="remote"
+        queue.type="LinkedList"
+        queue.size="{{ rsyslog_remote_queue_size }}"
+        queue.dequeueBatchSize="1024"
+        queue.workerThreads="{{ rsyslog_remote_queue_workers }}") {
+
+  # 1. Per-sender files on the dedicated log disk.
+  action(type="omfile" name="remote-file"
+         dynaFile="RemoteFilePath" template="{{ file_template }}"
+         dynaFileCacheSize="1024"
+         dirCreateMode="0750" fileCreateMode="0640"
+         asyncWriting="on" flushInterval="1" ioBufferSize="64k")
+
+{% if rsyslog_forward_to_ama %}
+  # 2. Local Azure Monitor Agent -> Log Analytics / Sentinel (DCR filters facilities/levels).
+  if prifilt("{{ rsyslog_ama_filter }}") then {
+    action(type="omfwd" name="fwd-ama"
+           target="{{ rsyslog_ama_target }}" port="{{ rsyslog_ama_port }}" protocol="tcp"
+           template="AmaForwardFormat"
+           queue.type="LinkedList" queue.filename="fwd-ama"
+           queue.size="50000" queue.maxDiskSpace="2g" queue.saveOnShutdown="on"
+           action.resumeRetryCount="-1" action.resumeInterval="5")
+  }
+{% endif %}
+
+{% for t in rsyslog_forward_targets %}
+  # 3. Downstream forwarder: {{ t.name }}
+  if prifilt("{{ t.filter | default('*.*') }}") then {
+    action(type="omfwd" name="fwd-{{ t.name }}"
+           target="{{ t.target }}" port="{{ t.port }}" protocol="{{ t.protocol }}"
+           template="RSYSLOG_SyslogProtocol23Format"
+{% if t.tls | default(false) %}
+           StreamDriver="gtls" StreamDriverMode="1"
+           StreamDriverAuthMode="{{ 'x509/name' if t.permitted_peer | default('') | length > 0 else 'x509/certvalid' }}"
+{% if t.permitted_peer | default('') | length > 0 %}
+           StreamDriverPermittedPeers="{{ t.permitted_peer }}"
+{% endif %}
+{% endif %}
+           queue.type="LinkedList" queue.filename="fwd-{{ t.name }}"
+           queue.size="50000" queue.maxDiskSpace="2g" queue.saveOnShutdown="on"
+           action.resumeRetryCount="-1" action.resumeInterval="10")
+  }
+{% endfor %}
+
+  stop
+}
+
+#### Listeners ####
+input(type="imudp" name="udp-{{ rsyslog_udp_port }}" port="{{ rsyslog_udp_port }}"
+      ruleset="remote" rcvbufSize="{{ rsyslog_udp_rcvbuf }}")
+
+input(type="imtcp" name="tcp-{{ rsyslog_tcp_port }}" port="{{ rsyslog_tcp_port }}"
+      ruleset="remote")
+
+{% if rsyslog_tls_enabled %}
+# Per-listener TLS (rsyslog >= 8.2106) so 514/tcp stays plain.
+input(type="imtcp" name="tls-{{ rsyslog_tls_port }}" port="{{ rsyslog_tls_port }}"
+      ruleset="remote"
+      streamDriver.name="gtls" streamDriver.mode="1"
+      streamDriver.authMode="{{ rsyslog_tls_auth_mode }}"
+{% if rsyslog_tls_permitted_peers | length > 0 %}
+      permittedPeer=["{{ rsyslog_tls_permitted_peers | join('","') }}"]
+{% endif %}
+      )
+{% endif %}

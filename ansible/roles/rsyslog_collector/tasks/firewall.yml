@@ -1,0 +1,25 @@
+---
+- name: Allow syslog from approved source ranges
+  community.general.ufw:
+    rule: allow
+    proto: "{{ item.1.proto }}"
+    port: "{{ item.1.port | string }}"
+    from_ip: "{{ item.0 }}"
+    comment: "{{ item.1.comment }}"
+  loop: "{{ syslog_allowed_source_cidrs | product(_syslog_ports) | list }}"
+  loop_control:
+    label: "{{ item.0 }} -> {{ item.1.proto }}/{{ item.1.port }}"
+  vars:
+    _syslog_ports: "{{ [
+      {'proto': 'udp', 'port': rsyslog_udp_port, 'comment': 'syslog-udp'},
+      {'proto': 'tcp', 'port': rsyslog_tcp_port, 'comment': 'syslog-tcp'}
+      ] + ([{'proto': 'tcp', 'port': rsyslog_tls_port, 'comment': 'syslog-tls'}] if rsyslog_tls_enabled else []) }}"
+
+- name: Allow Azure Load Balancer health probe
+  community.general.ufw:
+    rule: allow
+    proto: tcp
+    port: "{{ rsyslog_tcp_port | string }}"
+    from_ip: "{{ rsyslog_lb_probe_source }}"
+    comment: "azure-lb-probe"
+  when: rsyslog_lb_probe_enabled

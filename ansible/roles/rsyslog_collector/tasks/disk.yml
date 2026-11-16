@@ -1,0 +1,36 @@
+---
+# Azure exposes data disks by LUN. Newer images use azure-vm-utils paths,
+# older ones the waagent udev paths - accept either.
+- name: Resolve data disk device for LUN {{ syslog_data_disk_lun }}
+  ansible.builtin.shell: |
+    set -euo pipefail
+    for p in /dev/disk/azure/data/by-lun/{{ syslog_data_disk_lun }} /dev/disk/azure/scsi1/lun{{ syslog_data_disk_lun }}; do
+      if [ -e "$p" ]; then readlink -f "$p"; exit 0; fi
+    done
+    exit 1
+  args:
+    executable: /bin/bash
+  register: data_disk
+  retries: 12
+  delay: 10
+  until: data_disk.rc == 0
+  changed_when: false
+
+- name: Create filesystem (only if the disk is blank)
+  community.general.filesystem:
+    dev: "{{ data_disk.stdout }}"
+    fstype: "{{ syslog_data_disk_fstype }}"
+    force: false
+
+- name: Read filesystem UUID
+  ansible.builtin.command: blkid -s UUID -o value {{ data_disk.stdout }}
+  register: data_disk_uuid
+  changed_when: false
+
+- name: Mount log disk
+  ansible.posix.mount:
+    path: "{{ rsyslog_remote_log_dir }}"
+    src: "UUID={{ data_disk_uuid.stdout }}"
+    fstype: "{{ syslog_data_disk_fstype }}"
+    opts: defaults,nofail,noatime,nodev,nosuid,noexec
+    state: mounted

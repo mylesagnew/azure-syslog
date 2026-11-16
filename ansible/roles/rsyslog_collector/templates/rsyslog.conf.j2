@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+# Based on the Ubuntu 24.04 default, with collector-wide globals that must be
+# set before any input module is loaded.
+
+global(
+  maxMessageSize="{{ rsyslog_max_message_size }}"
+  workDirectory="/var/spool/rsyslog"
+)
+
+#### Local system logging ####
+module(load="imuxsock")
+module(load="imklog" permitnonkernelfacility="on")
+{% if rsyslog_impstats_enabled %}
+# Counters for queues/inputs - watch for "discarded" and "full" values.
+module(load="impstats" interval="{{ rsyslog_impstats_interval }}" severity="7"
+       log.syslog="off" log.file="/var/log/rsyslog-stats.log")
+{% endif %}
+
+#### Defaults kept from Ubuntu ####
+$RepeatedMsgReduction on
+$FileOwner syslog
+$FileGroup adm
+$FileCreateMode 0640
+$DirCreateMode 0755
+$Umask 0022
+$PrivDropToUser syslog
+$PrivDropToGroup syslog
+
+# 10-azuremonitoragent*.conf (AMA), 20-ufw.conf, 40-remote-collector.conf,
+# 50-default.conf (local files) are all picked up here.
+$IncludeConfig /etc/rsyslog.d/*.conf

@@ -1,0 +1,56 @@
+---
+# ---- Listeners -------------------------------------------------------------
+rsyslog_udp_port: 514
+rsyslog_tcp_port: 514
+rsyslog_tls_enabled: true
+rsyslog_tls_port: 6514
+
+# Allowed senders (host firewall). Terraform passes the same list it uses for the NSG.
+syslog_allowed_source_cidrs: []
+
+# Azure LB health probes come from 168.63.129.16.
+rsyslog_lb_probe_enabled: false
+rsyslog_lb_probe_source: 168.63.129.16
+
+# ---- TLS ---------------------------------------------------------------------
+rsyslog_tls_source: selfsigned        # selfsigned | keyvault
+rsyslog_tls_auth_mode: anon           # anon | x509/certvalid | x509/name
+rsyslog_tls_permitted_peers: []       # used with x509/name
+rsyslog_tls_dir: /etc/rsyslog-tls
+rsyslog_tls_ca_file: ""               # CA that issued CLIENT certs (mutual TLS); default = own chain
+rsyslog_tls_keyvault_name: ""
+rsyslog_tls_keyvault_secret_name: syslog-collector-tls
+rsyslog_tls_keyvault_dns_suffix: vault.azure.net   # vault.usgovcloudapi.net etc.
+rsyslog_tls_selfsigned_cn: "{{ ansible_fqdn }}"
+rsyslog_tls_selfsigned_days: 825
+
+# ---- Storage -----------------------------------------------------------------
+rsyslog_remote_log_dir: /var/log/remote
+rsyslog_remote_path_key: fromhost-ip  # fromhost-ip (unspoofable) | hostname
+rsyslog_remote_file_format: traditional  # traditional | rfc5424 | json
+rsyslog_remote_retention_days: 30
+rsyslog_remote_maxsize: 1G            # rotate early when a sender is noisy
+syslog_data_disk_lun: null            # Azure data disk LUN to mount at rsyslog_remote_log_dir
+syslog_data_disk_fstype: ext4
+
+# ---- Performance -------------------------------------------------------------
+rsyslog_max_message_size: 64k
+rsyslog_udp_threads: 2
+rsyslog_udp_rcvbuf: 32m
+rsyslog_tcp_max_sessions: 2000
+rsyslog_remote_queue_size: 200000
+rsyslog_remote_queue_workers: 4
+rsyslog_impstats_enabled: true
+rsyslog_impstats_interval: 300
+
+# ---- Forwarding --------------------------------------------------------------
+# Local Azure Monitor Agent (-> Log Analytics / Sentinel). The port is read from
+# AMA's own rsyslog file when present, otherwise this default is used.
+rsyslog_forward_to_ama: false
+rsyslog_ama_target: 127.0.0.1
+rsyslog_ama_port: 28330
+rsyslog_ama_filter: "*.*"
+rsyslog_ama_conf: /etc/rsyslog.d/10-azuremonitoragent-omfwd.conf
+
+# Downstream forwarders: [{name, target, port, protocol: udp|tcp, tls: bool, permitted_peer, filter}]
+rsyslog_forward_targets: []

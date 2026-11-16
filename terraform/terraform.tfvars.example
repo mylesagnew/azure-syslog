@@ -1,0 +1,96 @@
+# Copy to terraform.tfvars (git-ignored) and adjust to your Landing Zone.
+# The SSH public key is passed via environment instead:
+#   export TF_VAR_admin_ssh_public_key="$(cat ~/.ssh/syslog_admin.pub)"
+
+# --- Subscriptions -----------------------------------------------------------
+subscription_id            = "11111111-1111-1111-1111-111111111111" # shared services / management (VM lives here)
+network_subscription_id    = "22222222-2222-2222-2222-222222222222" # connectivity (hub VNet)
+dns_subscription_id        = "22222222-2222-2222-2222-222222222222" # connectivity (Private DNS zones)
+management_subscription_id = "33333333-3333-3333-3333-333333333333" # management (Log Analytics / Sentinel)
+
+# --- Naming & tags -----------------------------------------------------------
+location          = "australiaeast"
+location_short    = "aue"
+environment       = "prd"
+workload          = "syslog"
+landing_zone_name = "platform-connectivity"
+
+tags = {
+  Owner      = "platform-team@contoso.com"
+  CostCenter = "IT-1234"
+  Project    = "central-logging"
+}
+
+create_resource_group = true
+# resource_group_name = "rg-sharedsvc-prd-aue-001"   # set + create_resource_group = false to reuse
+
+# --- Network (existing) ------------------------------------------------------
+vnet_name                = "vnet-hub-prd-aue-001"
+vnet_resource_group_name = "rg-connectivity-prd-aue-001"
+subnet_name              = "snet-sharedsvc-prd-aue-001"
+# private_ip_addresses   = ["10.0.4.10", "10.0.4.11"]
+
+# Only these ranges may send syslog (spokes, on-prem via ER/VPN, NVAs).
+syslog_allowed_source_cidrs = [
+  "10.0.0.0/16",    # hub
+  "10.10.0.0/14",   # landing zone spokes
+  "172.16.0.0/16",  # on-premises
+]
+
+# AzureBastionSubnet prefix - the only SSH source.
+ssh_allowed_source_cidrs = ["10.0.1.0/26"]
+
+vm_count                      = 2
+zones                         = ["1", "2", "3"]
+enable_internal_load_balancer = true
+# lb_private_ip_address       = "10.0.4.9"
+
+enable_public_ip = false # keep false - Bastion is the access path
+
+# --- Private DNS (existing, connectivity subscription) -----------------------
+private_dns_zone_name                = "internal.contoso.com"
+private_dns_zone_resource_group_name = "rg-dns-prd-aue-001"
+dns_record_name                      = "syslog"
+
+# --- Bastion (existing) ------------------------------------------------------
+bastion_name                = "bas-hub-prd-aue-001"
+bastion_resource_group_name = "rg-connectivity-prd-aue-001"
+
+# --- Compute -----------------------------------------------------------------
+vm_size                    = "Standard_D2as_v5"
+admin_username             = "azureadmin"
+data_disk_size_gb          = 128
+encryption_at_host_enabled = true
+# disk_encryption_set_id   = "/subscriptions/.../diskEncryptionSets/des-prd-aue-001"
+enable_entra_ssh_login     = false
+# entra_admin_group_object_ids = ["44444444-4444-4444-4444-444444444444"]
+
+# --- Ansible -----------------------------------------------------------------
+ansible_mode              = "cse" # cse | bastion_push | none
+ansible_reconverge_weekly = true
+
+# --- TLS 6514 ----------------------------------------------------------------
+enable_tls             = true
+tls_certificate_source = "keyvault" # or "selfsigned"
+tls_auth_mode          = "anon"     # x509/name for mutual TLS
+key_vault_id           = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-sharedsvc-prd-aue-001/providers/Microsoft.KeyVault/vaults/kv-sharedsvc-prd-aue-01"
+key_vault_authorization          = "rbac"
+tls_keyvault_certificate_name    = "syslog-collector-tls"
+tls_keyvault_generate_certificate = false # true only if Cloud Shell can reach the vault data plane
+
+# --- rsyslog -----------------------------------------------------------------
+rsyslog_forward_to_ama    = true
+remote_log_retention_days = 30
+remote_log_format         = "traditional" # traditional | rfc5424 | json
+# rsyslog_forward_targets = [
+#   { name = "siem", target = "siem.internal.contoso.com", port = 6514, protocol = "tcp", tls = true, permitted_peer = "siem.internal.contoso.com" }
+# ]
+
+# --- Monitoring / Sentinel (existing) ----------------------------------------
+log_analytics_workspace_name                = "law-mgmt-prd-aue-001"
+log_analytics_workspace_resource_group_name = "rg-management-prd-aue-001"
+enable_ama                                  = true
+enable_dcr                                  = true
+dcr_syslog_log_levels                       = ["Notice", "Warning", "Error", "Critical", "Alert", "Emergency"]
+# dcr_cef_facilities                        = ["local4"]   # firewalls/appliances sending CEF
+enable_diagnostic_settings                  = true

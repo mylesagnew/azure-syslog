@@ -1,0 +1,26 @@
+# {{ ansible_managed }}
+Protocol 2
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PubkeyAuthentication yes
+UsePAM yes
+MaxAuthTries {{ baseline_ssh_max_auth_tries }}
+MaxSessions 4
+LoginGraceTime 30
+ClientAliveInterval {{ baseline_ssh_client_alive_interval }}
+ClientAliveCountMax {{ baseline_ssh_client_alive_count_max }}
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding no
+PermitTunnel no
+PermitUserEnvironment no
+LogLevel VERBOSE
+Banner /etc/issue.net
+KexAlgorithms {{ baseline_ssh_kex | join(',') }}
+Ciphers {{ baseline_ssh_ciphers | join(',') }}
+MACs {{ baseline_ssh_macs | join(',') }}
+{% if baseline_ssh_allow_groups | length > 0 %}
+AllowGroups {{ baseline_ssh_allow_groups | join(' ') }}
+{% endif %}

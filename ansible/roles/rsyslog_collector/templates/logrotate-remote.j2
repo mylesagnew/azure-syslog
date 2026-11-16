@@ -1,0 +1,32 @@
+# {{ ansible_managed }}
+# Remote logs are owned by "syslog", so logrotate must switch user.
+{{ rsyslog_remote_log_dir }}/*/*.log {
+    daily
+    maxsize {{ rsyslog_remote_maxsize }}
+    rotate {{ rsyslog_remote_retention_days }}
+    maxage {{ rsyslog_remote_retention_days }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    dateext
+    dateformat -%Y%m%d-%s
+    create 0640 syslog adm
+    su syslog adm
+    sharedscripts
+    postrotate
+        /usr/lib/rsyslog/rsyslog-rotate
+    endscript
+}
+
+/var/log/rsyslog-stats.log {
+    weekly
+    rotate 4
+    missingok
+    notifempty
+    compress
+    su syslog adm
+    postrotate
+        /usr/lib/rsyslog/rsyslog-rotate
+    endscript
+}

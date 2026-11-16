@@ -1,0 +1,40 @@
+---
+- name: Audit rules for identity, privilege and logging configuration changes
+  ansible.builtin.template:
+    src: audit-baseline.rules.j2
+    dest: /etc/audit/rules.d/50-baseline.rules
+    owner: root
+    group: root
+    mode: "0640"
+  when: baseline_auditd_enabled
+  notify: Load audit rules
+
+- name: Ensure auditd is running
+  ansible.builtin.service:
+    name: auditd
+    enabled: true
+    state: started
+  when: baseline_auditd_enabled
+
+- name: Journald drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Persistent, size-capped journal that still feeds rsyslog
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/60-baseline.conf
+    content: |
+      # Managed by Ansible
+      [Journal]
+      Storage=persistent
+      Compress=yes
+      SystemMaxUse={{ baseline_journald_max_use }}
+      ForwardToSyslog=yes
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart journald

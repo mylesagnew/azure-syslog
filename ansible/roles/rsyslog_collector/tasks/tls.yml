@@ -1,0 +1,116 @@
+---
+- name: TLS directory
+  ansible.builtin.file:
+    path: "{{ rsyslog_tls_dir }}"
+    state: directory
+    owner: root
+    group: syslog
+    mode: "0750"
+
+# ---- Key Vault (managed identity, private endpoint) --------------------------
+- name: Fetch certificate from Key Vault
+  when: rsyslog_tls_source == 'keyvault'
+  block:
+    - name: Assert Key Vault inputs
+      ansible.builtin.assert:
+        that:
+          - rsyslog_tls_keyvault_name | length > 0
+          - rsyslog_tls_keyvault_secret_name | length > 0
+        quiet: true
+
+    - name: Get managed identity token from IMDS
+      ansible.builtin.uri:
+        url: "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net"
+        headers:
+          Metadata: "true"
+        return_content: true
+      register: kv_token
+      retries: 10
+      delay: 15
+      until: kv_token.status == 200
+      no_log: true
+
+    # RBAC propagation for a fresh identity can take a few minutes.
+    - name: Read certificate secret (PEM key + chain)
+      ansible.builtin.uri:
+        url: "https://{{ rsyslog_tls_keyvault_name }}.{{ rsyslog_tls_keyvault_dns_suffix }}/secrets/{{ rsyslog_tls_keyvault_secret_name }}?api-version=7.4"
+        headers:
+          Authorization: "Bearer {{ kv_token.json.access_token }}"
+        status_code: [200, 401, 403, 404]
+        return_content: true
+      register: kv_secret
+      retries: 20
+      delay: 15
+      until: kv_secret.status == 200
+      no_log: true
+
+    - name: Require a PEM-formatted certificate
+      ansible.builtin.assert:
+        that: kv_secret.json.contentType | default('') == 'application/x-pem-file'
+        fail_msg: "Key Vault certificate must use content type application/x-pem-file (got {{ kv_secret.json.contentType | default('unknown') }})."
+        quiet: true
+
+    - name: Write certificate bundle
+      ansible.builtin.copy:
+        content: "{{ kv_secret.json.value }}"
+        dest: "{{ rsyslog_tls_dir }}/bundle.pem"
+        owner: root
+        group: root
+        mode: "0600"
+      register: tls_bundle
+      no_log: true
+
+    - name: Split bundle into key and certificate chain
+      ansible.builtin.shell: |
+        set -euo pipefail
+        umask 027
+        openssl pkey -in bundle.pem -out key.pem
+        awk '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/' bundle.pem > cert.pem
+      args:
+        chdir: "{{ rsyslog_tls_dir }}"
+        executable: /bin/bash
+      when: tls_bundle.changed
+      changed_when: true
+      notify: rsyslog config changed
+
+# ---- Self-signed (single collector / lab) ------------------------------------
+- name: Generate self-signed certificate
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - req
+      - -x509
+      - -newkey
+      - rsa:3072
+      - -sha256
+      - -nodes
+      - -days
+      - "{{ rsyslog_tls_selfsigned_days | string }}"
+      - -keyout
+      - "{{ rsyslog_tls_dir }}/key.pem"
+      - -out
+      - "{{ rsyslog_tls_dir }}/cert.pem"
+      - -subj
+      - "/CN={{ rsyslog_tls_selfsigned_cn }}"
+      - -addext
+      - "subjectAltName=DNS:{{ rsyslog_tls_selfsigned_cn }},DNS:{{ ansible_hostname }},IP:{{ ansible_default_ipv4.address }}"
+      - -addext
+      - "extendedKeyUsage=serverAuth"
+    creates: "{{ rsyslog_tls_dir }}/cert.pem"
+  when: rsyslog_tls_source == 'selfsigned'
+  notify: rsyslog config changed
+
+# rsyslog drops privileges to "syslog"; the key must stay readable to it.
+- name: Key permissions
+  ansible.builtin.file:
+    path: "{{ rsyslog_tls_dir }}/key.pem"
+    owner: root
+    group: syslog
+    mode: "0640"
+
+- name: Certificate permissions
+  ansible.builtin.file:
+    path: "{{ rsyslog_tls_dir }}/cert.pem"
+    owner: root
+    group: syslog
+    mode: "0644"

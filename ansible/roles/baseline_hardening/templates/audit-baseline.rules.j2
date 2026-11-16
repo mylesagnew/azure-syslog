@@ -1,0 +1,18 @@
+## {{ ansible_managed }}
+-w /etc/passwd -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/sudoers -p wa -k privilege
+-w /etc/sudoers.d/ -p wa -k privilege
+-w /etc/ssh/sshd_config -p wa -k sshd
+-w /etc/ssh/sshd_config.d/ -p wa -k sshd
+-w /etc/rsyslog.conf -p wa -k syslog_config
+-w /etc/rsyslog.d/ -p wa -k syslog_config
+-w /etc/logrotate.d/ -p wa -k syslog_config
+-w /var/log/lastlog -p wa -k logins
+-w /var/log/faillog -p wa -k logins
+-a always,exit -F arch=b64 -S adjtimex,settimeofday,clock_settime -k time_change
+-a always,exit -F arch=b64 -S sethostname,setdomainname -k system_locale
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k modules
+-a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -F auid!=unset -k root_exec

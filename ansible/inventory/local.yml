@@ -1,0 +1,8 @@
+# Used by the Custom Script Extension: the collector configures itself.
+all:
+  children:
+    syslog_collectors:
+      hosts:
+        localhost:
+          ansible_connection: local
+          ansible_python_interpreter: /usr/bin/python3

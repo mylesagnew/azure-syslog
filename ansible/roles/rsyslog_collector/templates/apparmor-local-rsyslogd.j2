@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+# Local additions to the packaged rsyslogd AppArmor profile.
+  {{ rsyslog_tls_dir }}/ r,
+  {{ rsyslog_tls_dir }}/** r,
+  {{ rsyslog_remote_log_dir }}/ rw,
+  {{ rsyslog_remote_log_dir }}/** rwk,
+  /var/log/rsyslog-stats.log rw,
+  network inet dgram,
+  network inet stream,
+  network inet6 dgram,
+  network inet6 stream,

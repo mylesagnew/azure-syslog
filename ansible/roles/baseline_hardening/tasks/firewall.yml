@@ -1,0 +1,26 @@
+---
+# Rules are added before ufw is enabled so an SSH session is never cut.
+# Syslog port rules are added by the rsyslog_collector role.
+- name: Default deny inbound
+  community.general.ufw:
+    direction: incoming
+    default: deny
+
+- name: Default allow outbound (egress is governed by the hub firewall)
+  community.general.ufw:
+    direction: outgoing
+    default: allow
+
+- name: Allow SSH from Bastion / admin ranges only
+  community.general.ufw:
+    rule: allow
+    proto: tcp
+    port: "{{ baseline_ssh_port | string }}"
+    from_ip: "{{ item }}"
+    comment: "ssh-bastion"
+  loop: "{{ baseline_ssh_allowed_cidrs }}"
+
+- name: Enable ufw with logging
+  community.general.ufw:
+    state: enabled
+    logging: "low"

@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Rendered by Terraform and executed as root by the Azure Custom Script
+# Extension. Unpacks the embedded Ansible bundle and applies it to this host.
+# Revision: ${revision}
+set -euo pipefail
+umask 077
+
+LOG=/var/log/syslog-lz-bootstrap.log
+exec > >(tee -a "$LOG") 2>&1
+echo "[bootstrap] $(date -Is) start, revision ${revision}"
+
+# cloud-init may still be installing packages; wait so apt is not locked.
+cloud-init status --wait >/dev/null 2>&1 || true
+
+export DEBIAN_FRONTEND=noninteractive
+APT="apt-get -o DPkg::Lock::Timeout=600 -y -q"
+if ! dpkg -s ansible >/dev/null 2>&1; then
+  $APT update
+  $APT install ansible python3
+fi
+
+WORK=/opt/syslog-lz
+install -d -m 0700 -o root -g root "$WORK"
+
+base64 -d > "$WORK/bundle.zip" <<'BUNDLE'
+${bundle_b64}
+BUNDLE
+
+rm -rf "$WORK/ansible.new"
+python3 -m zipfile -e "$WORK/bundle.zip" "$WORK/ansible.new"
+rm -rf "$WORK/ansible"
+mv "$WORK/ansible.new" "$WORK/ansible"
+
+cat > "$WORK/terraform-vars.json" <<'VARS'
+${vars_json}
+VARS
+
+cd "$WORK/ansible"
+export ANSIBLE_CONFIG="$WORK/ansible/ansible.cfg"
+export ANSIBLE_FORCE_COLOR=0
+ansible-playbook -i inventory/local.yml site.yml -e "@$WORK/terraform-vars.json"
+
+%{ if reconverge_timer ~}
+# Weekly drift correction: re-apply the same revision.
+cat > /etc/systemd/system/syslog-lz-converge.service <<'UNIT'
+[Unit]
+Description=Re-apply syslog collector Ansible configuration (drift correction)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/syslog-lz/ansible
+Environment=ANSIBLE_CONFIG=/opt/syslog-lz/ansible/ansible.cfg
+ExecStart=/usr/bin/ansible-playbook -i inventory/local.yml site.yml -e @/opt/syslog-lz/terraform-vars.json
+UNIT
+
+cat > /etc/systemd/system/syslog-lz-converge.timer <<'UNIT'
+[Unit]
+Description=Weekly syslog collector configuration drift correction
+
+[Timer]
+OnCalendar=Sun 02:00
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now syslog-lz-converge.timer
+%{ endif ~}
+
+echo "[bootstrap] $(date -Is) done"

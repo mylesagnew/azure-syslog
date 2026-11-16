@@ -1,0 +1,13 @@
+# Only needed when running Ansible from Cloud Shell (bastion_push / manual).
+# On the VM, Ubuntu's "ansible" package already ships these collections.
+collections:
+  - name: community.general
+    version: ">=8.0.0"
+  - name: ansible.posix
+    version: ">=1.5.0"
+
+# Optional: swap the in-repo baseline_hardening role for geerlingguy.security
+# (needs Galaxy egress from wherever Ansible runs).
+# roles:
+#   - name: geerlingguy.security
+#     version: "3.0.0"

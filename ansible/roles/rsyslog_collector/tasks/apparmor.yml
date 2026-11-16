@@ -1,0 +1,19 @@
+---
+# Ubuntu 24.04 confines rsyslogd. Allow the TLS directory and remote log tree
+# through the profile's local include rather than editing the packaged profile.
+- name: Check for rsyslog AppArmor profile
+  ansible.builtin.stat:
+    path: /etc/apparmor.d/usr.sbin.rsyslogd
+  register: rsyslog_aa_profile
+
+- name: AppArmor local overrides for rsyslogd
+  ansible.builtin.template:
+    src: apparmor-local-rsyslogd.j2
+    dest: /etc/apparmor.d/local/usr.sbin.rsyslogd
+    owner: root
+    group: root
+    mode: "0644"
+  when: rsyslog_aa_profile.stat.exists
+  notify:
+    - rsyslog apparmor changed
+    - rsyslog config changed

@@ -1,0 +1,97 @@
+---
+- name: Install rsyslog and TLS driver
+  ansible.builtin.apt:
+    name: "{{ ['rsyslog', 'logrotate', 'openssl'] + (['rsyslog-gnutls'] if rsyslog_tls_enabled else []) }}"
+    state: present
+    lock_timeout: 600
+
+- name: Dedicated log disk
+  ansible.builtin.import_tasks: disk.yml
+  when: syslog_data_disk_lun is not none
+
+- name: Remote log directory
+  ansible.builtin.file:
+    path: "{{ rsyslog_remote_log_dir }}"
+    state: directory
+    owner: syslog
+    group: adm
+    mode: "0750"
+
+- name: TLS material
+  ansible.builtin.import_tasks: tls.yml
+  when: rsyslog_tls_enabled
+
+- name: AppArmor allowances
+  ansible.builtin.import_tasks: apparmor.yml
+
+- name: Kernel socket buffers for bursty UDP syslog
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/61-rsyslog-collector.conf
+    sysctl_set: true
+    reload: false
+  loop:
+    - { key: net.core.rmem_max, value: 33554432 }
+    - { key: net.core.netdev_max_backlog, value: 5000 }
+  notify: Reload sysctl
+
+- name: Detect the Azure Monitor Agent forwarding port
+  when: rsyslog_forward_to_ama
+  block:
+    - name: Read AMA rsyslog forwarder config
+      ansible.builtin.slurp:
+        src: "{{ rsyslog_ama_conf }}"
+      register: ama_conf
+      failed_when: false
+
+    - name: Use AMA's configured port
+      ansible.builtin.set_fact:
+        rsyslog_ama_port: "{{ (ama_conf.content | b64decode | regex_search('port=\"(\\d+)\"', '\\1') | first) | int }}"
+      when:
+        - ama_conf.content is defined
+        - ama_conf.content | b64decode is search('port="\d+"')
+
+    - name: Warn when AMA has not written its config yet
+      ansible.builtin.debug:
+        msg: "{{ rsyslog_ama_conf }} not found yet (DCR may still be propagating); using port {{ rsyslog_ama_port }}. Re-run later to confirm."
+      when: ama_conf.content is not defined
+
+- name: Main rsyslog.conf
+  ansible.builtin.template:
+    src: rsyslog.conf.j2
+    dest: /etc/rsyslog.conf
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  notify: rsyslog config changed
+
+- name: Remote collector configuration
+  ansible.builtin.template:
+    src: 40-remote-collector.conf.j2
+    dest: /etc/rsyslog.d/40-remote-collector.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: rsyslog config changed
+
+- name: Log rotation for remote logs
+  ansible.builtin.template:
+    src: logrotate-remote.j2
+    dest: /etc/logrotate.d/rsyslog-remote
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Host firewall rules for syslog
+  ansible.builtin.import_tasks: firewall.yml
+
+- name: Ensure rsyslog is enabled and running
+  ansible.builtin.service:
+    name: rsyslog
+    enabled: true
+    state: started
+
+- name: Apply pending configuration now
+  ansible.builtin.meta: flush_handlers

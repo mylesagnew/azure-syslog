@@ -1,0 +1,25 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfplan
+tfplan
+terraform/.build/
+terraform/terraform.tfvars
+terraform/backend.hcl
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+
+# Ansible
+ansible/terraform-vars.json
+ansible/inventory/generated/
+*.retry
+
+# Keys / OS
+*.pem
+*.key
+id_*
+.DS_Store

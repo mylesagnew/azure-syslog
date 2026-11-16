@@ -1,0 +1,49 @@
+---
+- name: Apply hardening sysctls
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/60-baseline-hardening.conf
+    sysctl_set: true
+    state: present
+    reload: false
+  loop: "{{ baseline_sysctl | dict2items }}"
+  notify: Reload sysctl
+
+- name: Blacklist unused filesystems and network protocols
+  ansible.builtin.template:
+    src: modprobe-blacklist.conf.j2
+    dest: /etc/modprobe.d/60-baseline-blacklist.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Disable core dumps for all users
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/60-no-core.conf
+    content: |
+      # Managed by Ansible
+      * hard core 0
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Coredump drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/coredump.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Disable systemd-coredump storage
+  ansible.builtin.copy:
+    dest: /etc/systemd/coredump.conf.d/60-baseline.conf
+    content: |
+      # Managed by Ansible
+      [Coredump]
+      Storage=none
+      ProcessSizeMax=0
+    owner: root
+    group: root
+    mode: "0644"

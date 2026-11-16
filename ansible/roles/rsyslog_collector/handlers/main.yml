@@ -1,0 +1,21 @@
+---
+# Handlers run in the order written: validate first, then restart.
+- name: Reload rsyslog AppArmor profile
+  ansible.builtin.command: apparmor_parser -r -T -W /etc/apparmor.d/usr.sbin.rsyslogd
+  changed_when: true
+  listen: rsyslog apparmor changed
+
+- name: Validate rsyslog configuration
+  ansible.builtin.command: rsyslogd -N1 -f /etc/rsyslog.conf
+  changed_when: false
+  listen: rsyslog config changed
+
+- name: Restart rsyslog
+  ansible.builtin.service:
+    name: rsyslog
+    state: restarted
+  listen: rsyslog config changed
+
+- name: Reload sysctl
+  ansible.builtin.command: sysctl --system
+  changed_when: true

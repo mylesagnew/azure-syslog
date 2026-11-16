@@ -1,0 +1,7 @@
+# Copy to backend.hcl (git-ignored) and adjust.
+subscription_id      = "00000000-0000-0000-0000-000000000000" # management subscription
+resource_group_name  = "rg-tfstate-prd-aue-001"
+storage_account_name = "sttfstateprdaue001"
+container_name       = "tfstate"
+key                  = "shared-services/syslog/prd.tfstate"
+use_azuread_auth     = true

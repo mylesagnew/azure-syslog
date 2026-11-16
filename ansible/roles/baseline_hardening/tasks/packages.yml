@@ -1,0 +1,27 @@
+---
+- name: Install baseline packages
+  ansible.builtin.apt:
+    name: "{{ baseline_packages_present }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 600
+
+- name: Remove legacy clear-text clients and services
+  ansible.builtin.apt:
+    name: "{{ baseline_packages_absent }}"
+    state: absent
+    purge: true
+    lock_timeout: 600
+
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+- name: Disable unused services that exist on this image
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+    masked: true
+  loop: "{{ baseline_services_disabled }}"
+  when: item in ansible_facts.services

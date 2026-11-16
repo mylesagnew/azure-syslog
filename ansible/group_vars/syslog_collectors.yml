@@ -1,0 +1,9 @@
+---
+# Site-wide overrides for all collectors. Terraform passes infrastructure
+# facts (CIDRs, TLS source, Key Vault, data disk LUN ...) as extra vars, which
+# take precedence over anything here. Role defaults document every option:
+#   roles/baseline_hardening/defaults/main.yml
+#   roles/rsyslog_collector/defaults/main.yml
+
+# Example: keep this host's own logs local and quieter.
+# baseline_journald_max_use: 2G

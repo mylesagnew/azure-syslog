@@ -1,0 +1,38 @@
+---
+- name: Harden Ubuntu 24.04 and configure the central rsyslog collector
+  hosts: syslog_collectors
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Confirm supported platform
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+          - ansible_distribution_version is version("24.04", ">=")
+        fail_msg: "This playbook targets Ubuntu 24.04 LTS (found {{ ansible_distribution }} {{ ansible_distribution_version }})."
+        quiet: true
+
+    - name: Refuse to enable the firewall without an SSH allow-list when pushing over SSH
+      ansible.builtin.assert:
+        that: baseline_ssh_allowed_cidrs | default([]) | length > 0
+        fail_msg: "baseline_ssh_allowed_cidrs is empty - enabling ufw would lock this SSH session out."
+      when: ansible_connection | default('ssh') not in ['local']
+
+  roles:
+    - role: baseline_hardening
+    - role: rsyslog_collector
+
+  post_tasks:
+    - name: Verify TCP listeners are up
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ item }}"
+        timeout: 30
+      loop: "{{ [rsyslog_tcp_port] + ([rsyslog_tls_port] if rsyslog_tls_enabled else []) }}"
+
+    - name: Verify UDP listener is up
+      ansible.builtin.shell: "set -o pipefail && ss -Hlun 'sport = :{{ rsyslog_udp_port }}' | grep -q ."
+      args:
+        executable: /bin/bash
+      changed_when: false

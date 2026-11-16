@@ -1,0 +1,27 @@
+#cloud-config
+# First-boot only. Kept static: changing custom_data forces VM replacement.
+# Heavy lifting (hardening + rsyslog) is done by Ansible, which the Custom
+# Script Extension starts after cloud-init has finished.
+
+disable_root: true
+ssh_pwauth: false
+
+package_update: true
+package_upgrade: false
+
+# Pre-stage Ansible so the CSE run is quick. Ubuntu's "ansible" package
+# bundles community.general and ansible.posix, so the VM needs no egress to
+# Ansible Galaxy - only to the Ubuntu mirrors (via the hub firewall).
+packages:
+  - ansible
+  - python3
+  - rsyslog
+  - rsyslog-gnutls
+  - ufw
+  - unattended-upgrades
+
+write_files:
+  - path: /etc/issue.net
+    permissions: "0644"
+    content: |
+      Authorised access only. Activity on this system is logged and monitored.
