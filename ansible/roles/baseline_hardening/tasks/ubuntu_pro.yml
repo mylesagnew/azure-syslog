@@ -1,0 +1,38 @@
+---
+# In-place Ubuntu Pro on Azure: the platform licence (UBUNTU_PRO) entitles the
+# VM; 'pro auto-attach' exchanges the Azure identity document for a token.
+- name: Install the Ubuntu Pro client
+  ansible.builtin.apt:
+    name: ubuntu-pro-client
+    state: present
+    lock_timeout: 600
+
+- name: Read Ubuntu Pro status
+  ansible.builtin.command: pro status --format json
+  register: pro_status_raw
+  changed_when: false
+
+# The licence change can take a few minutes to reach IMDS after 'az vm update'.
+- name: Attach to Ubuntu Pro using the Azure licence
+  ansible.builtin.command: pro auto-attach
+  register: pro_attach
+  retries: 10
+  delay: 30
+  until: pro_attach.rc == 0
+  changed_when: pro_attach.rc == 0
+  when: not (pro_status_raw.stdout | from_json).attached
+
+- name: Re-read Ubuntu Pro status
+  ansible.builtin.command: pro status --format json
+  register: pro_status_now
+  changed_when: false
+
+- name: Enable required Ubuntu Pro services
+  ansible.builtin.command: pro enable {{ item }} --assume-yes
+  loop: "{{ baseline_ubuntu_pro_services }}"
+  when: >-
+    (pro_status_now.stdout | from_json).services
+    | selectattr('name', 'equalto', item)
+    | selectattr('status', 'equalto', 'enabled')
+    | list | length == 0
+  changed_when: true

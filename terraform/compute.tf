@@ -61,6 +61,9 @@ resource "azurerm_linux_virtual_machine" "syslog" {
   vtpm_enabled               = true
   encryption_at_host_enabled = var.encryption_at_host_enabled
 
+  # In-place Ubuntu Pro upgrade (same as 'az vm update --license-type UBUNTU_PRO').
+  license_type = var.ubuntu_pro ? "UBUNTU_PRO" : null
+
   # OS-level unattended-upgrades installs patches (configured by Ansible);
   # Azure Update Manager still assesses compliance.
   patch_mode            = "ImageDefault"

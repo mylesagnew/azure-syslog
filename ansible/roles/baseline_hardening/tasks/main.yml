@@ -2,6 +2,10 @@
 - name: Packages
   ansible.builtin.import_tasks: packages.yml
 
+- name: Ubuntu Pro attach
+  ansible.builtin.import_tasks: ubuntu_pro.yml
+  when: baseline_ubuntu_pro | bool
+
 - name: Kernel, sysctl and core dumps
   ansible.builtin.import_tasks: kernel.yml
 

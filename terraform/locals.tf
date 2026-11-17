@@ -65,6 +65,8 @@ locals {
   # Everything Ansible needs from the infrastructure layer. No secrets in here.
   ansible_vars = {
     required_ubuntu_release          = var.required_ubuntu_release
+    baseline_ubuntu_pro              = var.ubuntu_pro
+    baseline_ubuntu_pro_services     = var.ubuntu_pro_services
     syslog_allowed_source_cidrs      = var.syslog_allowed_source_cidrs
     baseline_ssh_allowed_cidrs       = local.ssh_cidrs
     baseline_unattended_reboot       = var.unattended_upgrades_auto_reboot

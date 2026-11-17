@@ -217,7 +217,7 @@ variable "zones" {
 }
 
 variable "source_image" {
-  description = "Ubuntu 26.04 LTS Gen2 marketplace image (URN Canonical:ubuntu-26_04-lts:server:latest). The offer is Canonical's unified 26.04 offer: sku 'server' = Ubuntu Server (AMD64, Gen2); sku 'pro-server' = Ubuntu Pro Server (Livepatch, ESM, USG CIS tooling). 'latest' resolves to a 26.04.1+ build; Ansible enforces required_ubuntu_release."
+  description = "Ubuntu 26.04 LTS Gen2 marketplace image (URN Canonical:ubuntu-26_04-lts:server:latest). The offer is Canonical's unified 26.04 offer: sku 'server' = Ubuntu Server (AMD64, Gen2); for Ubuntu Pro prefer var.ubuntu_pro (in-place licence upgrade) over changing the SKU, which would replace the VM. 'latest' resolves to a 26.04.1+ build; Ansible enforces required_ubuntu_release."
   type = object({
     publisher = string
     offer     = string
@@ -230,6 +230,22 @@ variable "source_image" {
     sku       = "server"
     version   = "latest"
   }
+}
+
+variable "ubuntu_pro" {
+  description = <<-EOT
+    Upgrade the collectors to Ubuntu Pro in place: sets the VM license type to UBUNTU_PRO
+    (billed per VM hour by Azure) and Ansible runs 'pro auto-attach'. Livepatch, ESM and the
+    USG CIS tooling become available. No redeploy - the image stays the free 'server' SKU.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "ubuntu_pro_services" {
+  description = "Ubuntu Pro services to make sure are enabled after attach (Azure auto-enables esm-infra/esm-apps/livepatch by default)."
+  type        = list(string)
+  default     = ["esm-infra", "esm-apps", "livepatch"]
 }
 
 variable "required_ubuntu_release" {

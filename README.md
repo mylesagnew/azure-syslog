@@ -92,10 +92,7 @@ Each file maps cleanly onto a future `modules/<name>` if you want to reuse it.
 ## Operating system: Ubuntu 26.04.1 LTS
 
 - **Image:** `Canonical:ubuntu-26_04-lts:server:latest`, the free *Ubuntu Server 26.04 LTS* plan (AMD64, Gen2, Trusted Launch capable) of Canonical's [unified 26.04 offer](https://marketplace.microsoft.com/en-us/product/canonical.ubuntu-26_04-lts). `latest` always resolves to the newest 26.04 build, which is 26.04.1 or later.
-- **Ubuntu Pro (optional):** the same offer includes the *Ubuntu Pro Server* plan: set `source_image.sku = "pro-server"`. It adds Kernel Livepatch, up to 15 years of security maintenance, and certified CIS/STIG hardening tooling, billed per VM hour. The separate *Ubuntu Pro 26.04 LTS* offer exists only for other procurement options. Check the exact SKU in your region first:
-  ```bash
-  az vm image list-skus -l australiaeast -p Canonical -f ubuntu-26_04-lts -o table
-  ```
+- **Ubuntu Pro (optional, in place):** deploy the free `server` image and upgrade it to Pro with a licence change; no redeploy needed. Set `ubuntu_pro = true` and Terraform sets the VM licence type to `UBUNTU_PRO` (billed per VM hour), and Ansible runs `pro auto-attach` and enables `ubuntu_pro_services` (default `esm-infra`, `esm-apps`, `livepatch`). Pro adds Kernel Livepatch, up to 15 years of security maintenance, and the USG CIS/STIG tooling. Do **not** switch `source_image.sku` to `pro-server` on a running deployment: that replaces the VMs. See [Upgrade to Ubuntu Pro from the command line](#upgrade-to-ubuntu-pro-from-the-command-line).
 - **Enforced point release:** before changing anything, the playbook reads `VERSION` from `/etc/os-release` and stops unless the host is Ubuntu 26.04 at `required_ubuntu_release` (default `26.04.1`) or later. Raise the variable (for example to `26.04.2`) to require a newer point release.
 - **SSH:** OpenSSH 10.x offers the hybrid post-quantum `mlkem768x25519-sha256` key exchange, so it is listed first.
 - **Ansible from Cloud Shell** (`bastion_push`) needs `ansible-core` 2.19 or later, because 26.04 ships a newer Python than older releases support. The script installs it when missing.
@@ -540,11 +537,47 @@ global(DefaultNetstreamDriverCAFile="/etc/rsyslog-ca.pem")
 
 | Task | How |
 |---|---|
+| Upgrade to Ubuntu Pro | `ubuntu_pro = true` and apply (in place). See [Upgrade to Ubuntu Pro from the command line](#upgrade-to-ubuntu-pro-from-the-command-line) |
 | Change rsyslog or hardening settings | Edit `ansible/` or `terraform.tfvars`, then `terraform plan -out tfplan && terraform apply tfplan`. The extension re-runs automatically |
 | Add a sender range | Append to `syslog_allowed_source_cidrs` and apply. Both the NSG and ufw are updated |
 | Scale out | Increase `vm_count` (and set `enable_internal_load_balancer = true`), then apply |
 | Pick up a renewed certificate now | On the VM: `sudo systemctl start syslog-lz-converge.service`. Otherwise the weekly timer does it |
 | Patch status | Azure Update Manager shows assessment results. Security updates install automatically |
+
+### Upgrade to Ubuntu Pro from the command line
+
+The VMs keep running and nothing is redeployed. Pick **one** of the two ways.
+
+**Option 1: through Terraform (recommended, keeps state in sync).** In `terraform.tfvars` set:
+```hcl
+ubuntu_pro = true
+```
+Then:
+```bash
+terraform plan -out tfplan
+```
+The plan should show the VMs as **update in-place** (`license_type` → `UBUNTU_PRO`) and the `ansible-bootstrap` extension changing. Stop if it says *must be replaced*. Then:
+```bash
+terraform apply tfplan
+```
+
+**Option 2: Azure CLI only** (for example, to try it on one VM first). Set the licence on the VM:
+```bash
+az vm update -g rg-syslog-prd-aue-001 -n vm-syslog-prd-aue-01 --license-type UBUNTU_PRO
+```
+Then attach on the VM, either over Bastion SSH with `sudo pro auto-attach`, or from Cloud Shell:
+```bash
+az vm run-command invoke -g rg-syslog-prd-aue-001 -n vm-syslog-prd-aue-01 --command-id RunShellScript --scripts "pro auto-attach && pro status"
+```
+Afterwards set `ubuntu_pro = true` in `terraform.tfvars`, so Terraform and Azure agree; otherwise a later `terraform apply` may try to remove the licence.
+
+**Check:**
+```bash
+az vm show -g rg-syslog-prd-aue-001 -n vm-syslog-prd-aue-01 --query licenseType -o tsv
+```
+This should print `UBUNTU_PRO`. On the VM, `pro status` should show `esm-infra`, `esm-apps` and `livepatch` as `enabled`.
+
+**To go back to free Ubuntu Server:** run `sudo pro detach --assume-yes` on the VM, then set `ubuntu_pro = false` and apply (or `az vm update ... --license-type None`).
 
 ### Troubleshooting
 
@@ -553,6 +586,7 @@ global(DefaultNetstreamDriverCAFile="/etc/rsyslog-ca.pem")
 | `init` fails with 403 on the state blob | You need **Storage Blob Data Contributor** on the state container |
 | Playbook stops at *Confirm Ubuntu 26.04 LTS at the required point release* | The VM is not on 26.04.1 or later. Check `source_image` is `Canonical:ubuntu-26_04-lts:server:latest`, or run `sudo apt-get update && sudo apt-get full-upgrade -y` on the VM and re-run `terraform apply` |
 | AMA extension fails to install | Ubuntu 26.04 may not be on the AMA supported list yet (see [Operating system](#operating-system-ubuntu-26041-lts)). Set `enable_ama = false` for now |
+| `pro auto-attach` fails with "not entitled" | The `UBUNTU_PRO` licence has not reached the VM yet (wait a few minutes and re-run `terraform apply`), or the VM was created from a non-Canonical image |
 | Plan fails with `AuthorizationFailed` on the subnet, DNS zone or workspace | The wrong `*_subscription_id`, or missing read or join rights in that subscription |
 | `EncryptionAtHost` error on VM create | Step 5 has not finished, or the feature is blocked. Wait for `Registered` or set `encryption_at_host_enabled = false` |
 | `ansible-bootstrap` extension fails | On the VM, read `/var/log/syslog-lz-bootstrap.log`. From Cloud Shell: `az vm run-command invoke -g <rg> -n <vm> --command-id RunShellScript --scripts "tail -n 80 /var/log/syslog-lz-bootstrap.log"`. The most common cause is no egress to the Ubuntu mirrors through the hub firewall |

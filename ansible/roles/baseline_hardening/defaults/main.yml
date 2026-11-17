@@ -106,3 +106,11 @@ baseline_unattended_reboot_time: "03:30"
 baseline_journald_max_use: 1G
 
 baseline_auditd_enabled: true
+
+# Ubuntu Pro. On Azure the VM must carry license type UBUNTU_PRO first
+# (Terraform var ubuntu_pro, or: az vm update --license-type UBUNTU_PRO).
+baseline_ubuntu_pro: false
+baseline_ubuntu_pro_services:
+  - esm-infra
+  - esm-apps
+  - livepatch
