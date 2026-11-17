@@ -14,7 +14,7 @@ resource "azurerm_availability_set" "syslog" {
 }
 
 # ---------------------------------------------------------------------------
-# Collector VMs - Ubuntu 24.04 Gen2, Trusted Launch, host encryption,
+# Collector VMs - Ubuntu 26.04.1 LTS Gen2, Trusted Launch, host encryption,
 # system-assigned identity, managed boot diagnostics, no password auth.
 # ---------------------------------------------------------------------------
 resource "azurerm_linux_virtual_machine" "syslog" {

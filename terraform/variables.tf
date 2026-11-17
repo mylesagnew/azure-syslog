@@ -217,7 +217,7 @@ variable "zones" {
 }
 
 variable "source_image" {
-  description = "Ubuntu 24.04 LTS Gen2 marketplace image. Use sku 'ubuntu-pro' for Ubuntu Pro (USG CIS tooling)."
+  description = "Ubuntu 26.04 LTS Gen2 marketplace image (URN Canonical:ubuntu-26_04-lts:server:latest). For Ubuntu Pro (USG CIS tooling) use offer 'ubuntu-pro-26_04-lts'. 'latest' resolves to a 26.04.1+ build; Ansible enforces required_ubuntu_release."
   type = object({
     publisher = string
     offer     = string
@@ -226,9 +226,20 @@ variable "source_image" {
   })
   default = {
     publisher = "Canonical"
-    offer     = "ubuntu-24_04-lts"
+    offer     = "ubuntu-26_04-lts"
     sku       = "server"
     version   = "latest"
+  }
+}
+
+variable "required_ubuntu_release" {
+  description = "Minimum Ubuntu point release the playbook accepts (checked against /etc/os-release VERSION)."
+  type        = string
+  default     = "26.04.1"
+
+  validation {
+    condition     = can(regex("^26\\.04(\\.[0-9]+)?$", var.required_ubuntu_release))
+    error_message = "required_ubuntu_release must be a 26.04.x release, e.g. 26.04.1."
   }
 }
 

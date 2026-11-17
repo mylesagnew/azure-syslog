@@ -1,5 +1,5 @@
 ---
-# Ubuntu 24.04 uses socket activation; sshd -t needs the privsep dir.
+# Ubuntu 26.04 uses socket activation; sshd -t needs the privsep dir.
 - name: Ensure sshd privilege separation directory exists
   ansible.builtin.file:
     path: /run/sshd

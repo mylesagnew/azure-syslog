@@ -1,5 +1,5 @@
 ---
-# Ubuntu 24.04 confines rsyslogd. Allow the TLS directory and remote log tree
+# Ubuntu 26.04 confines rsyslogd. Allow the TLS directory and remote log tree
 # through the profile's local include rather than editing the packaged profile.
 - name: Check for rsyslog AppArmor profile
   ansible.builtin.stat:

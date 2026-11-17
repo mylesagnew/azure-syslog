@@ -1,6 +1,6 @@
 # azure-syslog
 
-A hardened central syslog collector (rsyslog on Ubuntu 24.04 LTS) for an existing
+A hardened central syslog collector (rsyslog on **Ubuntu 26.04.1 LTS**) for an existing
 CAF-aligned Azure Landing Zone. **Terraform** builds the infrastructure,
 **Ansible** hardens the OS and configures rsyslog. You run all of it from
 **Azure Cloud Shell (bash)**.
@@ -86,6 +86,17 @@ scripts/
 The Terraform root is split by concern rather than into child modules. It is
 one deployable unit, and a flat root keeps the Landing Zone wiring easy to see.
 Each file maps cleanly onto a future `modules/<name>` if you want to reuse it.
+
+---
+
+## Operating system: Ubuntu 26.04.1 LTS
+
+- **Image:** `Canonical:ubuntu-26_04-lts:server:latest` (Gen2, Trusted Launch). `latest` always resolves to the newest 26.04 build, which is 26.04.1 or later. For Ubuntu Pro (Livepatch, USG CIS profiles), set `source_image.offer = "ubuntu-pro-26_04-lts"`.
+- **Enforced point release:** before changing anything, the playbook reads `VERSION` from `/etc/os-release` and stops unless the host is Ubuntu 26.04 at `required_ubuntu_release` (default `26.04.1`) or later. Raise the variable (for example to `26.04.2`) to require a newer point release.
+- **SSH:** OpenSSH 10.x offers the hybrid post-quantum `mlkem768x25519-sha256` key exchange, so it is listed first.
+- **Ansible from Cloud Shell** (`bastion_push`) needs `ansible-core` 2.19 or later, because 26.04 ships a newer Python than older releases support. The script installs it when missing.
+
+> **Check before production:** at the time of writing, Microsoft's [Azure Monitor Agent supported OS list](https://learn.microsoft.com/en-us/azure/azure-monitor/agents/azure-monitor-agent-supported-operating-systems) did not yet name Ubuntu 26.04. AMA 1.45 (September 2026) only taught its troubleshooter to recognise 26.04. Confirm 26.04 support on that page, and for `AADSSHLoginForLinux` if you use Entra SSH login. If AMA is not supported yet, deploy with `enable_ama = false` and forward to Sentinel from an existing supported collector using `rsyslog_forward_targets`.
 
 ---
 
@@ -285,7 +296,13 @@ az keyvault show -n "<kv-name>" --query id -o tsv
 
 **f. Syslog source ranges:** list every CIDR that will send logs: spokes, on-premises ranges over ExpressRoute or VPN, and NVA subnets. → `syslog_allowed_source_cidrs`
 
-**g. Check the region supports zones for the VM size:**
+**g. Confirm the Ubuntu 26.04 image is available in your region:**
+```bash
+az vm image list -l australiaeast -p Canonical -f ubuntu-26_04-lts -s server --all --query "[-1].{urn:urn, version:version}" -o table
+```
+The newest version should be dated after the 26.04.1 point release. If the list is empty, the region does not have the offer yet; choose another region or wait.
+
+**h. Check the region supports zones for the VM size:**
 ```bash
 az vm list-skus -l australiaeast --size Standard_D2as_v5 --query "[0].locationInfo[0].zones" -o tsv
 ```
@@ -530,6 +547,8 @@ global(DefaultNetstreamDriverCAFile="/etc/rsyslog-ca.pem")
 | Symptom | Likely cause / fix |
 |---|---|
 | `init` fails with 403 on the state blob | You need **Storage Blob Data Contributor** on the state container |
+| Playbook stops at *Confirm Ubuntu 26.04 LTS at the required point release* | The VM is not on 26.04.1 or later. Check `source_image` is `Canonical:ubuntu-26_04-lts:server:latest`, or run `sudo apt-get update && sudo apt-get full-upgrade -y` on the VM and re-run `terraform apply` |
+| AMA extension fails to install | Ubuntu 26.04 may not be on the AMA supported list yet (see [Operating system](#operating-system-ubuntu-26041-lts)). Set `enable_ama = false` for now |
 | Plan fails with `AuthorizationFailed` on the subnet, DNS zone or workspace | The wrong `*_subscription_id`, or missing read or join rights in that subscription |
 | `EncryptionAtHost` error on VM create | Step 5 has not finished, or the feature is blocked. Wait for `Registered` or set `encryption_at_host_enabled = false` |
 | `ansible-bootstrap` extension fails | On the VM, read `/var/log/syslog-lz-bootstrap.log`. From Cloud Shell: `az vm run-command invoke -g <rg> -n <vm> --command-id RunShellScript --scripts "tail -n 80 /var/log/syslog-lz-bootstrap.log"`. The most common cause is no egress to the Ubuntu mirrors through the hub firewall |

@@ -1,16 +1,36 @@
 ---
-- name: Harden Ubuntu 24.04 and configure the central rsyslog collector
+- name: Harden Ubuntu 26.04 LTS and configure the central rsyslog collector
   hosts: syslog_collectors
   become: true
   gather_facts: true
 
+  vars:
+    required_ubuntu_release: "26.04.1"
+
   pre_tasks:
-    - name: Confirm supported platform
+    - name: Read the exact Ubuntu point release
+      ansible.builtin.slurp:
+        src: /etc/os-release
+      register: os_release_raw
+
+    # VERSION_ID is only "26.04"; VERSION carries the point release, e.g. "26.04.1 LTS (Resolute Raccoon)".
+    - name: Parse point release
+      ansible.builtin.set_fact:
+        ubuntu_point_release: >-
+          {{ (os_release_raw.content | b64decode
+              | regex_findall('^VERSION="?([0-9.]+)', multiline=True)
+              | default(['0'], true) | first) }}
+
+    - name: Confirm Ubuntu 26.04 LTS at the required point release
       ansible.builtin.assert:
         that:
           - ansible_distribution == "Ubuntu"
-          - ansible_distribution_version is version("24.04", ">=")
-        fail_msg: "This playbook targets Ubuntu 24.04 LTS (found {{ ansible_distribution }} {{ ansible_distribution_version }})."
+          - ansible_distribution_version == "26.04"
+          - ubuntu_point_release is version(required_ubuntu_release, ">=")
+        fail_msg: >-
+          This playbook targets Ubuntu {{ required_ubuntu_release }} LTS or a later 26.04 point release
+          (found {{ ansible_distribution }} {{ ubuntu_point_release }}). Use the image
+          Canonical:ubuntu-26_04-lts:server:latest, or run a full upgrade first.
         quiet: true
 
     - name: Refuse to enable the firewall without an SSH allow-list when pushing over SSH

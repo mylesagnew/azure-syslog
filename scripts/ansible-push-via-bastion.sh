@@ -27,7 +27,7 @@ printf '%s' "$EXTRA_VARS_JSON" > "$WORK/terraform-vars.json"
 
 # Cloud Shell: install Ansible into the user's home (persisted on the clouddrive).
 if ! command -v ansible-playbook >/dev/null 2>&1; then
-  python3 -m pip install --user --quiet 'ansible-core>=2.16,<2.19'
+  python3 -m pip install --user --quiet 'ansible-core>=2.19'  # 26.04 ships a newer Python than older cores support
   export PATH="$HOME/.local/bin:$PATH"
 fi
 ansible-galaxy collection install -r "$ANSIBLE_DIR/requirements.yml" >/dev/null

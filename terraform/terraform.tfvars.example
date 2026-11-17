@@ -58,6 +58,8 @@ bastion_resource_group_name = "rg-connectivity-prd-aue-001"
 
 # --- Compute -----------------------------------------------------------------
 vm_size                    = "Standard_D2as_v5"
+# Image defaults to Canonical:ubuntu-26_04-lts:server:latest; the playbook refuses anything older than this.
+required_ubuntu_release    = "26.04.1"
 admin_username             = "azureadmin"
 data_disk_size_gb          = 128
 encryption_at_host_enabled = true
