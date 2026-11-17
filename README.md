@@ -91,7 +91,11 @@ Each file maps cleanly onto a future `modules/<name>` if you want to reuse it.
 
 ## Operating system: Ubuntu 26.04.1 LTS
 
-- **Image:** `Canonical:ubuntu-26_04-lts:server:latest` (Gen2, Trusted Launch). `latest` always resolves to the newest 26.04 build, which is 26.04.1 or later. For Ubuntu Pro (Livepatch, USG CIS profiles), set `source_image.offer = "ubuntu-pro-26_04-lts"`.
+- **Image:** `Canonical:ubuntu-26_04-lts:server:latest`, the free *Ubuntu Server 26.04 LTS* plan (AMD64, Gen2, Trusted Launch capable) of Canonical's [unified 26.04 offer](https://marketplace.microsoft.com/en-us/product/canonical.ubuntu-26_04-lts). `latest` always resolves to the newest 26.04 build, which is 26.04.1 or later.
+- **Ubuntu Pro (optional):** the same offer includes the *Ubuntu Pro Server* plan: set `source_image.sku = "pro-server"`. It adds Kernel Livepatch, up to 15 years of security maintenance, and certified CIS/STIG hardening tooling, billed per VM hour. The separate *Ubuntu Pro 26.04 LTS* offer exists only for other procurement options. Check the exact SKU in your region first:
+  ```bash
+  az vm image list-skus -l australiaeast -p Canonical -f ubuntu-26_04-lts -o table
+  ```
 - **Enforced point release:** before changing anything, the playbook reads `VERSION` from `/etc/os-release` and stops unless the host is Ubuntu 26.04 at `required_ubuntu_release` (default `26.04.1`) or later. Raise the variable (for example to `26.04.2`) to require a newer point release.
 - **SSH:** OpenSSH 10.x offers the hybrid post-quantum `mlkem768x25519-sha256` key exchange, so it is listed first.
 - **Ansible from Cloud Shell** (`bastion_push`) needs `ansible-core` 2.19 or later, because 26.04 ships a newer Python than older releases support. The script installs it when missing.

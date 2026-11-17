@@ -217,7 +217,7 @@ variable "zones" {
 }
 
 variable "source_image" {
-  description = "Ubuntu 26.04 LTS Gen2 marketplace image (URN Canonical:ubuntu-26_04-lts:server:latest). For Ubuntu Pro (USG CIS tooling) use offer 'ubuntu-pro-26_04-lts'. 'latest' resolves to a 26.04.1+ build; Ansible enforces required_ubuntu_release."
+  description = "Ubuntu 26.04 LTS Gen2 marketplace image (URN Canonical:ubuntu-26_04-lts:server:latest). The offer is Canonical's unified 26.04 offer: sku 'server' = Ubuntu Server (AMD64, Gen2); sku 'pro-server' = Ubuntu Pro Server (Livepatch, ESM, USG CIS tooling). 'latest' resolves to a 26.04.1+ build; Ansible enforces required_ubuntu_release."
   type = object({
     publisher = string
     offer     = string
