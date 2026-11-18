@@ -1,0 +1,70 @@
+---
+- name: Archive configuration
+  when: syslog_archive_enabled | bool
+  block:
+    - name: Require an archive storage account
+      ansible.builtin.assert:
+        that: syslog_archive_account | length > 0
+        fail_msg: syslog_archive_enabled is true but syslog_archive_account is empty.
+        quiet: true
+
+    - name: Archive state directory
+      ansible.builtin.file:
+        path: /var/lib/syslog-archive
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Install archive uploader
+      ansible.builtin.copy:
+        src: syslog-archive.py
+        dest: /usr/local/sbin/syslog-archive
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Archive uploader settings
+      ansible.builtin.copy:
+        dest: /etc/syslog-archive.json
+        content: "{{ _cfg | to_nice_json }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+      vars:
+        _cfg:
+          account: "{{ syslog_archive_account }}"
+          container: "{{ syslog_archive_container }}"
+          endpoint_suffix: "{{ syslog_archive_endpoint_suffix }}"
+          tier: "{{ syslog_archive_tier }}"
+          prefix: "{{ syslog_archive_prefix }}"
+          root: "{{ rsyslog_remote_log_dir }}"
+          local_days: "{{ rsyslog_remote_retention_days | int }}"
+          state_file: /var/lib/syslog-archive/state.json
+
+    - name: Archive systemd units
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - syslog-archive.service
+        - syslog-archive.timer
+      register: archive_units
+
+    - name: Enable hourly archive timer
+      ansible.builtin.systemd_service:
+        name: syslog-archive.timer
+        enabled: true
+        state: started
+        daemon_reload: "{{ archive_units.changed }}"
+
+- name: Disable archive timer when archiving is off
+  ansible.builtin.systemd_service:
+    name: syslog-archive.timer
+    enabled: false
+    state: stopped
+  when: not (syslog_archive_enabled | bool)
+  failed_when: false

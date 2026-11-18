@@ -33,6 +33,10 @@ provider "azurerm" {
     resource_group {
       prevent_deletion_if_contains_resources = true
     }
+    storage {
+      # The archive account is private-endpoint only; Cloud Shell cannot reach its data plane.
+      data_plane_available = false
+    }
   }
 }
 

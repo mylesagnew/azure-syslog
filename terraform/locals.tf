@@ -80,7 +80,10 @@ locals {
     rsyslog_lb_probe_enabled         = local.lb_enabled
     rsyslog_forward_to_ama           = var.enable_ama && var.enable_dcr && var.rsyslog_forward_to_ama
     rsyslog_forward_targets          = var.rsyslog_forward_targets
-    rsyslog_remote_retention_days    = var.remote_log_retention_days
+    rsyslog_remote_retention_days    = var.local_log_retention_days
+    syslog_archive_enabled           = var.enable_blob_archive
+    syslog_archive_account           = local.archive_account_name
+    syslog_archive_container         = var.archive_container_name
     rsyslog_remote_file_format       = var.remote_log_format
     syslog_data_disk_lun             = var.data_disk_size_gb > 0 ? 0 : null
   }

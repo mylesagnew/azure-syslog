@@ -1,0 +1,27 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Archive rotated remote syslog files to Azure Blob Storage
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/syslog-archive --config /etc/syslog-archive.json
+SyslogIdentifier=syslog-archive
+Nice=10
+IOSchedulingClass=idle
+# Hardening: only the log tree and its own state are writable.
+ProtectSystem=strict
+ReadWritePaths={{ rsyslog_remote_log_dir }} /var/lib/syslog-archive
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native

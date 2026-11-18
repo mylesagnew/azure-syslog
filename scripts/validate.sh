@@ -19,6 +19,8 @@ logger --server "$IP" --port 514 --tcp "$TAG tcp"
 sleep 3
 echo "--- received";  grep -rh "$TAG" /var/log/remote/ || echo "TEST MESSAGES NOT FOUND"
 echo "--- tls";       timeout 5 openssl s_client -connect 127.0.0.1:6514 -brief </dev/null 2>&1 | head -n 4 || true
+echo "--- archive"; systemctl is-active syslog-archive.timer 2>/dev/null || echo "archive timer not active"
+systemctl start syslog-archive.service 2>/dev/null; journalctl -u syslog-archive -n 3 --no-pager -o cat 2>/dev/null
 echo "--- ama";       systemctl is-active azuremonitoragent 2>/dev/null || echo "AMA not installed"
 ls /etc/rsyslog.d/
 SH

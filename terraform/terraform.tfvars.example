@@ -62,7 +62,7 @@ vm_size                    = "Standard_D2as_v5"
 ubuntu_pro                 = false # true = in-place Ubuntu Pro upgrade (Livepatch, ESM); billed per VM hour
 required_ubuntu_release    = "26.04.1"
 admin_username             = "azureadmin"
-data_disk_size_gb          = 128
+data_disk_size_gb          = 64 # Premium SSD: holds local_log_retention_days only
 encryption_at_host_enabled = true
 # disk_encryption_set_id   = "/subscriptions/.../diskEncryptionSets/des-prd-aue-001"
 enable_entra_ssh_login     = false
@@ -83,11 +83,20 @@ tls_keyvault_generate_certificate = false # true only if Cloud Shell can reach t
 
 # --- rsyslog -----------------------------------------------------------------
 rsyslog_forward_to_ama    = true
-remote_log_retention_days = 30
 remote_log_format         = "traditional" # traditional | rfc5424 | json
 # rsyslog_forward_targets = [
 #   { name = "siem", target = "siem.internal.contoso.com", port = 6514, protocol = "tcp", tls = true, permitted_peer = "siem.internal.contoso.com" }
 # ]
+
+# --- Retention: 7 days on SSD, 30 days in Blob Storage -----------------------
+local_log_retention_days = 7
+enable_blob_archive      = true
+blob_retention_days      = 30
+archive_replication_type = "ZRS"
+archive_soft_delete_days = 7
+archive_immutable        = false # true = WORM for blob_retention_days
+# private_endpoint_subnet_name = "snet-pep-prd-aue-001"   # default: collector subnet
+# blob_private_dns_zone_id     = "/subscriptions/2222.../privateDnsZones/privatelink.blob.core.windows.net"
 
 # --- Monitoring / Sentinel (existing) ----------------------------------------
 log_analytics_workspace_name                = "law-mgmt-prd-aue-001"

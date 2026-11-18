@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Hourly upload of rotated syslog files to Azure Blob Storage
+
+[Timer]
+OnCalendar={{ syslog_archive_schedule }}
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

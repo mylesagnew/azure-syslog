@@ -222,6 +222,8 @@ resource "azurerm_virtual_machine_extension" "ansible" {
     azurerm_role_assignment.kv_secret_reader,
     azurerm_key_vault_access_policy.syslog,
     azurerm_key_vault_certificate.syslog,
+    azurerm_role_assignment.archive_writer,
+    azurerm_private_endpoint.archive_blob,
   ]
 }
 
@@ -258,6 +260,8 @@ resource "null_resource" "ansible_push" {
     azurerm_role_assignment.kv_secret_reader,
     azurerm_key_vault_access_policy.syslog,
     azurerm_key_vault_certificate.syslog,
+    azurerm_role_assignment.archive_writer,
+    azurerm_private_endpoint.archive_blob,
     azurerm_network_security_rule.ssh,
   ]
 }

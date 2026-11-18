@@ -14,6 +14,11 @@ terraform {
       source  = "hashicorp/archive"
       version = "~> 2.4"
     }
+    # Unique suffix for the archive storage account name.
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
     # Only used when ansible_mode = "bastion_push" (local-exec from Cloud Shell).
     null = {
       source  = "hashicorp/null"

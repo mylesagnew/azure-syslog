@@ -84,6 +84,9 @@
     group: root
     mode: "0644"
 
+- name: Blob Storage archive
+  ansible.builtin.import_tasks: archive.yml
+
 - name: Host firewall rules for syslog
   ansible.builtin.import_tasks: firewall.yml
 

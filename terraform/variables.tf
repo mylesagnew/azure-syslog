@@ -287,9 +287,9 @@ variable "os_disk_size_gb" {
 }
 
 variable "data_disk_size_gb" {
-  description = "Dedicated data disk for /var/log/remote. 0 = keep logs on the OS disk (not recommended)."
+  description = "Premium SSD log disk for /var/log/remote. Holds local_log_retention_days of logs plus headroom; the bulk lives in Blob. 0 = OS disk (not recommended)."
   type        = number
-  default     = 128
+  default     = 64
 }
 
 variable "data_disk_type" {
@@ -461,10 +461,15 @@ variable "rsyslog_forward_targets" {
   default = []
 }
 
-variable "remote_log_retention_days" {
-  description = "Days of on-disk remote logs kept by logrotate."
+variable "local_log_retention_days" {
+  description = "Days of remote logs kept on the VM's Premium SSD log disk. Older files are removed only once they are confirmed in Blob Storage."
   type        = number
-  default     = 30
+  default     = 7
+
+  validation {
+    condition     = var.local_log_retention_days >= 1 && var.local_log_retention_days <= 90
+    error_message = "local_log_retention_days must be 1-90."
+  }
 }
 
 variable "remote_log_format" {
@@ -524,4 +529,65 @@ variable "enable_diagnostic_settings" {
   description = "Send NSG logs and platform metrics (VM, NIC, LB) to the workspace."
   type        = bool
   default     = true
+}
+
+# ===========================================================================
+# Blob Storage archive (bulk retention)
+# ===========================================================================
+variable "enable_blob_archive" {
+  description = "Upload every rotated log file to a private Blob Storage account (Cool tier) and keep it there for blob_retention_days."
+  type        = bool
+  default     = true
+}
+
+variable "blob_retention_days" {
+  description = "Days archived logs are kept in Blob Storage before the lifecycle policy deletes them."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.blob_retention_days >= 1
+    error_message = "blob_retention_days must be at least 1."
+  }
+}
+
+variable "archive_storage_account_name" {
+  description = "Override the generated archive account name (3-24 lowercase letters/digits, globally unique)."
+  type        = string
+  default     = null
+}
+
+variable "archive_container_name" {
+  type    = string
+  default = "syslog-archive"
+}
+
+variable "archive_replication_type" {
+  description = "ZRS keeps the archive available through a zone outage; GZRS adds a paired region."
+  type        = string
+  default     = "ZRS"
+}
+
+variable "archive_soft_delete_days" {
+  description = "Blob/container soft delete. Deleted blobs stay recoverable (and billed) this many extra days."
+  type        = number
+  default     = 7
+}
+
+variable "archive_immutable" {
+  description = "Time-based WORM retention on the container for blob_retention_days (unlocked; lock it manually once confirmed)."
+  type        = bool
+  default     = false
+}
+
+variable "private_endpoint_subnet_name" {
+  description = "Subnet (same VNet) for the archive private endpoint. null = the collector subnet."
+  type        = string
+  default     = null
+}
+
+variable "blob_private_dns_zone_id" {
+  description = "Resource ID of privatelink.blob.core.windows.net. null = rely on the Landing Zone's DNS policy."
+  type        = string
+  default     = null
 }

@@ -8,7 +8,8 @@ CAF-aligned Azure Landing Zone. **Terraform** builds the infrastructure,
 - Listens on **UDP/514**, **TCP/514** and **TLS/6514** (RFC 5425)
 - **Private only.** No public IP. Admin access goes through **Azure Bastion**
 - **Zone-redundant**: 1 to 5 VMs spread across Availability Zones, with an optional internal Standard Load Balancer and one DNS name
-- Writes one log file per sender to an encrypted data disk, and forwards to **Log Analytics / Microsoft Sentinel** through the Azure Monitor Agent (AMA) and a Data Collection Rule
+- **Tiered retention:** one log file per sender on the VM's Premium SSD for **7 days**; every rotated file is also archived to private **Blob Storage (Cool tier) for 30 days**, where the bulk of the storage lives
+- Forwards to **Log Analytics / Microsoft Sentinel** through the Azure Monitor Agent (AMA) and a Data Collection Rule
 - No secrets in code, state or extension payloads. The TLS certificate comes from **Key Vault** through the VM's **managed identity**
 
 **New here? Follow the [step-by-step deployment guide](#step-by-step-deployment-guide-azure-cloud-shell).**
@@ -32,10 +33,13 @@ CAF-aligned Azure Landing Zone. **Terraform** builds the infrastructure,
 │                 zone 1                   zone 2                                     │
 │                 ├ NIC NSG + ASG (least privilege)                                   │
 │                 ├ ufw (same allow-list), SSH hardened, auditd, unattended-upgrades  │
-│                 ├ rsyslog ruleset "remote" ──► /var/log/remote/<sender-ip>/ (disk)  │
-│                 │                          └─► AMA (127.0.0.1) ─┐                   │
+│                 ├ rsyslog ruleset "remote" ──► /var/log/remote/<sender-ip>/         │
+│                 │      (Premium SSD, 7 days)  └─► AMA (127.0.0.1) ─┐                │
+│                 ├ syslog-archive (hourly, MI) ──► Blob Storage ────┼──┐             │
 │                 └ System-assigned MI ──► Key Vault (private endpoint): TLS cert     │
-│                                                                 │                   │
+│                                                                    │  │             │
+│   Storage account (private endpoint, Cool tier, no keys) ◄─────────┼──┘             │
+│     lifecycle policy: delete after 30 days                         │                │
 │   AzureBastionSubnet ──SSH 22──► collectors (only SSH source)   │                   │
 └─────────────────────────────────────────────────────────────────┼───────────────────┘
                                                                   ▼
@@ -69,6 +73,7 @@ terraform/
   network.tf                             ASG, NIC NSG + rules, NICs, optional PIP, optional internal LB
   compute.tf                             VMs, log disks, AMA / Entra SSH / Ansible extensions
   monitoring.tf                          DCR + association, diagnostic settings
+  storage.tf                             Blob archive: account, container, lifecycle, private endpoint, RBAC
   keyvault.tf dns.tf outputs.tf
   templates/cloud-init.yaml              first boot: pre-installs ansible, rsyslog, ufw
   templates/bootstrap.sh.tftpl           CSE script: unpack the embedded playbook and run it locally
@@ -98,6 +103,39 @@ Each file maps cleanly onto a future `modules/<name>` if you want to reuse it.
 - **Ansible from Cloud Shell** (`bastion_push`) needs `ansible-core` 2.19 or later, because 26.04 ships a newer Python than older releases support. The script installs it when missing.
 
 > **Check before production:** at the time of writing, Microsoft's [Azure Monitor Agent supported OS list](https://learn.microsoft.com/en-us/azure/azure-monitor/agents/azure-monitor-agent-supported-operating-systems) did not yet name Ubuntu 26.04. AMA 1.45 (September 2026) only taught its troubleshooter to recognise 26.04. Confirm 26.04 support on that page, and for `AADSSHLoginForLinux` if you use Entra SSH login. If AMA is not supported yet, deploy with `enable_ama = false` and forward to Sentinel from an existing supported collector using `rsyslog_forward_targets`.
+
+---
+
+## Log storage: 7 days on SSD, 30 days in Blob
+
+| Tier | Where | Kept for | Purpose |
+|---|---|---|---|
+| Hot | Premium SSD data disk, `/var/log/remote/<sender-ip>/` | `local_log_retention_days` (7) | Fast `grep`/`tail` during an investigation |
+| Archive (bulk) | Storage account `st<workload><env><region><suffix>`, container `syslog-archive`, **Cool** tier | `blob_retention_days` (30) | Cheap retention and evidence |
+
+How it works:
+1. logrotate rotates and gzips each sender's file daily, or early at 1 GiB.
+2. `syslog-archive.timer` runs hourly. It uploads every rotated `.gz` with the VM's **managed identity** to `syslog-archive/<collector-vm>/<sender-ip>/<file>.gz`. It sends a `Content-MD5` so Azure verifies the upload, and never overwrites an existing blob.
+3. After 7 days the local copy is deleted, **but only after the uploader re-confirms the blob exists with the same checksum**. If uploads keep failing, local files are kept and the run is marked failed. logrotate's safety net then removes them at 7 + 7 days, so the disk can't fill up.
+4. The storage **lifecycle policy** deletes blobs 30 days after upload. Cool tier's 30-day minimum matches, so there is no early-deletion charge.
+
+Security of the archive:
+- No public endpoint and no account keys (shared key auth disabled, Entra ID only). Access is through a private endpoint in the Landing Zone VNet.
+- Each collector's identity has **Storage Blob Data Contributor on the archive container only**.
+- Writes and deletes are logged to the workspace (`StorageWrite` and `StorageDelete` diagnostic logs).
+- Optional WORM retention: `archive_immutable = true` puts a time-based immutability policy (30 days) on the container. It is created unlocked; lock it in the portal once you're sure, because a locked policy can't be shortened.
+- Blob soft delete (`archive_soft_delete_days`, default 7) keeps deleted blobs recoverable for a few extra days. Set it to `1` if exactly 30 days matters.
+
+Reading the archive: the account is private, so read it from inside the VNet (a jump host, or a collector through Bastion):
+```bash
+az storage blob list --account-name <account> -c syslog-archive --auth-mode login --prefix vm-syslog-prd-aue-01/ -o table
+```
+```bash
+az storage blob download --account-name <account> -c syslog-archive --auth-mode login -n "<blob-name>" -f /tmp/log.gz && zcat /tmp/log.gz | less
+```
+Your account needs *Storage Blob Data Reader* on the container.
+
+Sizing the SSD: `data_disk_size_gb` ≈ daily compressed volume × 8 + one day uncompressed, plus about 30% headroom. The 64 GiB default comfortably covers a few GB of raw syslog a day.
 
 ---
 
@@ -134,6 +172,7 @@ same revision to correct drift.
    - the Ubuntu mirrors (`azure.archive.ubuntu.com`, `security.ubuntu.com`)
    - the AMA endpoints (`global.handler.control.monitor.azure.com`, `<region>.handler.control.monitor.azure.com`, `<workspace-id>.ods.opinsights.azure.com`), or an AMPLS
    - the Key Vault private endpoint
+   - the archive storage account's blob private endpoint (`privatelink.blob.core.windows.net` must resolve from the subnet)
 4. **Key Vault certificate** (when `tls_certificate_source = "keyvault"`). The secret's content type must be **`application/x-pem-file`**. Either:
    - issue or import it yourself (recommended, from your enterprise CA), or
    - set `tls_keyvault_generate_certificate = true`. This calls the vault's data plane from Cloud Shell, so the vault firewall must allow Cloud Shell, or Cloud Shell must run in a VNet.
@@ -151,11 +190,13 @@ same revision to correct drift.
 | `ssh_allowed_source_cidrs` | AzureBastionSubnet prefix |
 | `vm_count`, `zones`, `enable_internal_load_balancer` | High availability. An empty `zones` list creates an Availability Set |
 | `vm_size` | Default `Standard_D2as_v5` (see the cost notes) |
-| `data_disk_size_gb` | Dedicated log disk mounted at `/var/log/remote` (`0` = OS disk) |
+| `data_disk_size_gb` | Premium SSD log disk mounted at `/var/log/remote` (default 64 GiB; it only holds the local days) |
+| `local_log_retention_days`, `enable_blob_archive`, `blob_retention_days` | Tiered retention: 7 days on SSD, 30 days in Blob (defaults) |
+| `archive_replication_type`, `archive_immutable`, `archive_soft_delete_days`, `private_endpoint_subnet_name`, `blob_private_dns_zone_id` | Archive account options |
 | `encryption_at_host_enabled`, `disk_encryption_set_id` | Disk encryption (host encryption, plus an optional customer-managed key) |
 | `enable_tls`, `tls_certificate_source`, `tls_auth_mode`, `key_vault_id` | TLS on 6514 |
 | `log_analytics_workspace_name`, `enable_ama`, `enable_dcr`, `dcr_syslog_facilities`, `dcr_syslog_log_levels`, `dcr_cef_facilities` | Sentinel and Log Analytics ingestion |
-| `remote_log_format`, `remote_log_retention_days`, `rsyslog_forward_targets` | rsyslog behaviour |
+| `remote_log_format`, `rsyslog_forward_targets` | rsyslog behaviour |
 | `ansible_mode` | `cse`, `bastion_push` or `none` |
 | `tags` | Must include `Owner` and `CostCenter`. Merged over the standard Environment, Workload, LandingZone, DataClassification, Criticality and ManagedBy tags |
 
@@ -303,7 +344,13 @@ az vm image list -l australiaeast -p Canonical -f ubuntu-26_04-lts -s server --a
 ```
 The newest version should be dated after the 26.04.1 point release. If the list is empty, the region does not have the offer yet; choose another region or wait.
 
-**h. Check the region supports zones for the VM size:**
+**h. Blob private DNS (for the log archive):** check whether the Landing Zone already has the zone, and whether a policy adds private endpoint records automatically:
+```bash
+az network private-dns zone list --subscription "<dns-sub-id>" --query "[?name=='privatelink.blob.core.windows.net'].id" -o tsv
+```
+If your platform team does **not** use the Deploy-Private-DNS-Zones policy, put this ID in `blob_private_dns_zone_id`. If they want private endpoints in a dedicated subnet, note its name for `private_endpoint_subnet_name`.
+
+**i. Check the region supports zones for the VM size:**
 ```bash
 az vm list-skus -l australiaeast --size Standard_D2as_v5 --query "[0].locationInfo[0].zones" -o tsv
 ```
@@ -463,6 +510,7 @@ For each VM this runs, through the Azure control plane:
 - there are listeners on `:514` (udp and tcp) and `:6514`
 - the `--- received` section shows **two** `lz-syslog-selftest` lines
 - `azuremonitoragent` shows `active`
+- `--- archive` shows the timer `active` and a `summary ... failed=0` line. On a brand-new collector there is nothing rotated yet, so `uploaded=0` is expected; the first files upload the day after deployment
 
 ### Step 16: Test from a real sender
 
@@ -587,6 +635,8 @@ This should print `UBUNTU_PRO`. On the VM, `pro status` should show `esm-infra`,
 | Playbook stops at *Confirm Ubuntu 26.04 LTS at the required point release* | The VM is not on 26.04.1 or later. Check `source_image` is `Canonical:ubuntu-26_04-lts:server:latest`, or run `sudo apt-get update && sudo apt-get full-upgrade -y` on the VM and re-run `terraform apply` |
 | AMA extension fails to install | Ubuntu 26.04 may not be on the AMA supported list yet (see [Operating system](#operating-system-ubuntu-26041-lts)). Set `enable_ama = false` for now |
 | `pro auto-attach` fails with "not entitled" | The `UBUNTU_PRO` licence has not reached the VM yet (wait a few minutes and re-run `terraform apply`), or the VM was created from a non-Canonical image |
+| `syslog-archive` fails with HTTP 403 | The VM's role assignment on the container is still propagating (wait about 5 minutes), or `<account>.blob.core.windows.net` resolves to a public IP. Check with `getent hosts <account>.blob.core.windows.net` on the VM: it must return the private endpoint IP |
+| `syslog-archive` fails with a name or connection error | The private DNS record for the blob endpoint is missing. Set `blob_private_dns_zone_id`, or ask the platform team to check the DNS policy |
 | Plan fails with `AuthorizationFailed` on the subnet, DNS zone or workspace | The wrong `*_subscription_id`, or missing read or join rights in that subscription |
 | `EncryptionAtHost` error on VM create | Step 5 has not finished, or the feature is blocked. Wait for `Registered` or set `encryption_at_host_enabled = false` |
 | `ansible-bootstrap` extension fails | On the VM, read `/var/log/syslog-lz-bootstrap.log`. From Cloud Shell: `az vm run-command invoke -g <rg> -n <vm> --command-id RunShellScript --scripts "tail -n 80 /var/log/syslog-lz-bootstrap.log"`. The most common cause is no egress to the Ubuntu mirrors through the hub firewall |
@@ -638,8 +688,11 @@ guest configuration (Linux baseline), and VNet flow logs at VNet scope (these re
   `sudo systemctl start syslog-lz-converge.service`.
 - **Scale out**: increase `vm_count`, with `enable_internal_load_balancer = true`. TCP senders keep
   their session on one backend, and UDP is distributed per flow.
-- **Disk usage**: logrotate runs daily with `maxsize 1G`. For very noisy senders, run logrotate hourly
-  or increase `data_disk_size_gb`. `/var/log/rsyslog-stats.log` shows queue pressure.
+- **Disk usage**: the SSD only holds `local_log_retention_days`. logrotate runs daily with `maxsize 1G`.
+  For very noisy senders, run logrotate hourly or increase `data_disk_size_gb`. `/var/log/rsyslog-stats.log` shows queue pressure.
+- **Archive health**: `systemctl list-timers syslog-archive.timer` and `journalctl -u syslog-archive -n 50`. Each run ends with
+  `summary uploaded=… pruned=… failed=…`. Failures also reach Log Analytics (`Syslog | where ProcessName == "syslog-archive"`).
+- **Run the archive now**: `sudo systemctl start syslog-archive.service` (`sudo syslog-archive --dry-run` only reports).
 - **Self-signed TLS with more than one VM**: each VM generates its own certificate, so clients must
   trust each one or use `anon` mode. Use Key Vault for multi-VM TLS.
 
@@ -650,7 +703,8 @@ guest configuration (Linux baseline), and VNet flow logs at VNet scope (these re
 | Item | Recommendation |
 |---|---|
 | VM | **Standard_D2as_v5** (2 vCPU / 8 GiB) handles thousands of events per second and sustains load without CPU credits. **B2s_v2** is cheaper for labs or low, bursty volumes, but throttles once credits run out. Reserved instances or a savings plan cut the cost by about 40 to 60% for a 24x7 collector. |
-| Disks | 64 GiB Premium OS + 128 GiB Premium data per VM. Standard SSD halves the disk cost and is fine below about 500 events per second. |
+| Disks | 64 GiB Premium OS + 64 GiB Premium data per VM (holds 7 days). Standard SSD halves the disk cost and is fine below about 500 events per second. |
+| Blob archive | Cool tier, ZRS, billed per GB-month for about 30 days of compressed logs (syslog typically compresses 10:1 or more), plus small write and lifecycle operation charges. Much cheaper per GB than Premium SSD. The private endpoint adds a small hourly and per-GB charge. |
 | Internal LB | Standard LB rule and data-processed charges (small) |
 | **Log Analytics ingestion** | Usually the **largest** cost, billed per GB. Control it with `dcr_syslog_log_levels` and `dcr_syslog_facilities`, a commitment tier, or by keeping verbose data on disk only. |
 
@@ -666,6 +720,9 @@ terraform apply destroy.tfplan
 
 - This removes the VMs, disks, NICs, NSG, ASG, LB, DCR, DNS records, role assignments and access
   policies. It never deletes the existing VNet, DNS zone, workspace, Key Vault or Bastion.
+- **The archive storage account and its blobs are deleted too.** To keep the archive, remove it from state first:
+  `terraform state rm 'azurerm_storage_account.archive[0]' 'azurerm_storage_container.archive[0]' 'azurerm_storage_management_policy.archive[0]'`.
+  A *locked* immutability policy blocks the delete until the blobs expire.
 - A generated Key Vault certificate is soft-deleted, not purged (`purge_soft_delete_on_destroy = false`).
 - Data already ingested into Log Analytics stays until the workspace retention removes it.
 - If you used `create_resource_group = false`, the shared RG is kept.

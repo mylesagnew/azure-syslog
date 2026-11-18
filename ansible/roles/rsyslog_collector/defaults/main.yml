@@ -28,10 +28,23 @@ rsyslog_tls_selfsigned_days: 825
 rsyslog_remote_log_dir: /var/log/remote
 rsyslog_remote_path_key: fromhost-ip  # fromhost-ip (unspoofable) | hostname
 rsyslog_remote_file_format: traditional  # traditional | rfc5424 | json
-rsyslog_remote_retention_days: 30
+rsyslog_remote_retention_days: 7     # days on the local Premium SSD
 rsyslog_remote_maxsize: 1G            # rotate early when a sender is noisy
 syslog_data_disk_lun: null            # Azure data disk LUN to mount at rsyslog_remote_log_dir
 syslog_data_disk_fstype: ext4
+
+# ---- Blob Storage archive (bulk retention) ----------------------------------
+# Rotated files are uploaded hourly with the managed identity; local copies are
+# removed after rsyslog_remote_retention_days only once the blob is confirmed.
+syslog_archive_enabled: false
+syslog_archive_account: ""
+syslog_archive_container: syslog-archive
+syslog_archive_endpoint_suffix: blob.core.windows.net   # blob.core.usgovcloudapi.net etc.
+syslog_archive_tier: Cool
+syslog_archive_prefix: "{{ ansible_hostname }}"
+syslog_archive_schedule: hourly
+# logrotate safety net if uploads keep failing: delete anyway after local + grace days.
+syslog_archive_grace_days: 7
 
 # ---- Performance -------------------------------------------------------------
 rsyslog_max_message_size: 64k

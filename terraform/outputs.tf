@@ -69,3 +69,14 @@ output "ansible_extra_vars" {
 output "ansible_bootstrap_log" {
   value = var.ansible_mode == "cse" ? "/var/log/syslog-lz-bootstrap.log on each collector (CSE stdout also in /var/lib/waagent/custom-script/download/0/)" : null
 }
+
+output "archive_storage_account" {
+  description = "Private Blob Storage account holding the 30-day log archive."
+  value = var.enable_blob_archive ? {
+    name           = azurerm_storage_account.archive[0].name
+    container      = var.archive_container_name
+    blob_retention = "${var.blob_retention_days} days (lifecycle policy)"
+    local_ssd      = "${var.local_log_retention_days} days on /var/log/remote"
+    layout         = "<container>/<collector-vm>/<sender-ip>/<rotated-file>.gz"
+  } : null
+}

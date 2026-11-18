@@ -3,8 +3,15 @@
 {{ rsyslog_remote_log_dir }}/*/*.log {
     daily
     maxsize {{ rsyslog_remote_maxsize }}
+{% if syslog_archive_enabled | bool %}
+    # Local copies are removed by syslog-archive after {{ rsyslog_remote_retention_days }} days once
+    # confirmed in Blob Storage. This is only a safety net if uploads keep failing.
+    rotate 10000
+    maxage {{ (rsyslog_remote_retention_days | int) + (syslog_archive_grace_days | int) }}
+{% else %}
     rotate {{ rsyslog_remote_retention_days }}
     maxage {{ rsyslog_remote_retention_days }}
+{% endif %}
     missingok
     notifempty
     compress
