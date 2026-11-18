@@ -23,3 +23,7 @@ ansible/inventory/generated/
 *.key
 id_*
 .DS_Store
+
+# Python
+__pycache__/
+*.pyc
