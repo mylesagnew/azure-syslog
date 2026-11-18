@@ -12,11 +12,17 @@ CAF-aligned Azure Landing Zone. **Terraform** builds the infrastructure,
 - Forwards to **Log Analytics / Microsoft Sentinel** through the Azure Monitor Agent (AMA) and a Data Collection Rule
 - No secrets in code, state or extension payloads. The TLS certificate comes from **Key Vault** through the VM's **managed identity**
 
-**New here? Follow the [step-by-step deployment guide](#step-by-step-deployment-guide-azure-cloud-shell).**
+**Fastest path:** run the [interactive installer](#interactive-install-and-uninstall) in Cloud Shell. **Want to understand every step?** Follow the [step-by-step deployment guide](#step-by-step-deployment-guide-azure-cloud-shell).
 
 ---
 
 ## Architecture
+
+![Azure Syslog Solution - operating architecture: external syslog sources send UDP/TCP 514 and TLS 6514 to an internal load balancer in Australia East, which spreads traffic across SYSLOG-01 (AZ1) and SYSLOG-02 (AZ2) running rsyslog on Ubuntu 26.04 LTS with encrypted data disks; compressed logs are archived to ZRS Blob Storage, and Microsoft Sentinel / Azure Monitor provide monitoring](docs/architecture.webp)
+
+*Operating architecture. Names and address ranges (`rg-syslog-prod`, `10.10.0.0/16`) are illustrative; yours come from `terraform.tfvars`.*
+
+Detailed view, with the Landing Zone integration points:
 
 ```
             On-prem (ER/VPN)        Spoke VNets            NVAs / firewalls
@@ -82,6 +88,8 @@ ansible/
   roles/baseline_hardening/              CIS-inspired OS baseline
   roles/rsyslog_collector/               disk, TLS, AppArmor, rsyslog, logrotate, ufw
 scripts/
+  install.sh / uninstall.sh              interactive install (asks for IP ranges, writes tfvars) and teardown
+  lib.sh                                 prompt + IP validation helpers shared by the two scripts
   validate.sh                            post-deploy checks through az vm run-command
   test-syslog-client.sh                  send test messages from a source host
   ansible-push-via-bastion.sh            alternative Ansible delivery over a Bastion tunnel
@@ -201,6 +209,52 @@ same revision to correct drift.
 | `tags` | Must include `Owner` and `CostCenter`. Merged over the standard Environment, Workload, LandingZone, DataClassification, Criticality and ManagedBy tags |
 
 `variables.tf` documents every variable. Each Ansible role's `defaults/main.yml` documents the rsyslog and hardening tunables.
+
+---
+
+## Interactive install and uninstall
+
+`scripts/install.sh` asks the questions, looks up your Landing Zone resources with `az`, validates every IP address, writes `terraform/terraform.tfvars` and `terraform/backend.hcl`, then runs `terraform init`, `plan` and (after you type `apply`) `apply`.
+
+```bash
+git clone https://github.com/mylesagnew/azure-syslog.git ~/azure-syslog && cd ~/azure-syslog
+```
+```bash
+./scripts/install.sh
+```
+To stop after the plan and review it first:
+```bash
+./scripts/install.sh --plan-only
+```
+
+What it asks, in order:
+
+| Step | Question | How it is answered |
+|---|---|---|
+| 1 | Workload, network, DNS and management subscriptions | Defaults to your current subscription. It also checks *EncryptionAtHost* and offers to register it |
+| 2 | VNet and subnet | Numbered menu of your VNets and subnets (gateway, firewall and Bastion subnets are hidden) |
+| 3 | Environment, region code, LandingZone / Owner / CostCenter tags | Typed, with defaults |
+| 4 | Azure Bastion and **SSH source ranges** | Pick the Bastion; its AzureBastionSubnet prefix is offered as the SSH range |
+| 5 | **Syslog source ranges** | Comma-separated CIDRs or single IPs. Defaults to the VNet address space |
+| 6 | VM count, load balancer, **static IPs** for the LB and each VM, VM size | Each IP is checked to be inside the subnet, not one of Azure's reserved addresses, and not used twice. Zone support is checked |
+| 7 | Log Analytics workspace | Menu |
+| 8 | Private DNS zone, record name, TLS and Key Vault certificate | Menus. Choosing no vault means a self-signed certificate on each VM |
+| 9 | SSD days, Blob archive and days, soft delete, DNS policy, Ubuntu Pro | Typed, with defaults (7 / yes / 30 / 7 / yes / no) |
+| - | Terraform state account | Reuses `backend.hcl`, or asks and offers to create the account with `bootstrap-state.sh` |
+
+IP validation rules:
+- IPv4 only.
+- `0.0.0.0/0` is refused.
+- A bare IP becomes a `/32`.
+- A range that is not on a network boundary is corrected, with a warning (for example `10.10.0.0/14` → `10.8.0.0/14`).
+
+Re-running the script offers to reuse the existing `terraform.tfvars`, and backs up the old file before writing a new one. It creates `~/.ssh/syslog_admin` if it doesn't exist.
+
+**Uninstall:**
+```bash
+./scripts/uninstall.sh
+```
+It reads the deployment from Terraform state and shows what will be deleted. You must type the resource group name, then `destroy`. It asks whether to **keep the Blob log archive** (default yes); if you keep it, the archive and its resource group are detached from Terraform first, so they survive. Existing Landing Zone resources (VNet, DNS zones, workspace, Key Vault, Bastion) are never touched. Finally it offers to delete the local `tfvars`, `backend.hcl` and SSH key (default no).
 
 ---
 
@@ -711,6 +765,8 @@ guest configuration (Linux baseline), and VNet flow logs at VNet scope (these re
 ---
 
 ## Cleanup / destroy
+
+The easy way is `./scripts/uninstall.sh` (see [Interactive install and uninstall](#interactive-install-and-uninstall)). To do it manually:
 
 ```bash
 cd azure-syslog/terraform
