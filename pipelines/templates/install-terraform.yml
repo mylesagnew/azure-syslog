@@ -1,0 +1,16 @@
+# Installs the pinned Terraform version, verifying the HashiCorp SHA256 checksum.
+steps:
+  - bash: |
+      set -euo pipefail
+      v="$(TF_VERSION)"
+      dir="$(Agent.ToolsDirectory)/terraform/$v"
+      if [ ! -x "$dir/terraform" ]; then
+        tmp="$(mktemp -d)"
+        base="https://releases.hashicorp.com/terraform/$v"
+        curl -fsSLo "$tmp/tf.zip"  "$base/terraform_${v}_linux_amd64.zip"
+        curl -fsSLo "$tmp/sums"    "$base/terraform_${v}_SHA256SUMS"
+        (cd "$tmp" && grep " terraform_${v}_linux_amd64.zip\$" sums | sed "s/terraform_${v}_linux_amd64.zip/tf.zip/" | sha256sum -c -)
+        mkdir -p "$dir" && unzip -q -o "$tmp/tf.zip" -d "$dir" && rm -rf "$tmp"
+      fi
+      echo "##vso[task.prependpath]$dir"
+    displayName: Install Terraform $(TF_VERSION)

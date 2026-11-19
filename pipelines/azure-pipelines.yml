@@ -1,0 +1,195 @@
+# azure-syslog - optional Azure DevOps pipeline using OIDC (workload identity federation).
+#
+# No client secrets: the service connection exchanges a short-lived Azure DevOps
+# ID token for an Entra token for a user-assigned managed identity. Terraform
+# refreshes that token itself during long applies (ARM_USE_OIDC +
+# ARM_ADO_PIPELINE_SERVICE_CONNECTION_ID + SYSTEM_ACCESSTOKEN).
+#
+# One-time setup: ../devops (Terraform) creates the identity, federated credential,
+# service connection, approval environment and variable group. Then upload two
+# Secure Files: syslog-<env>.tfvars and syslog-<env>-backend.hcl.
+#
+# Flow: Validate -> Plan (artifact: tfplan + plan.txt) -> [approval] -> Apply
+
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include: [terraform/*, ansible/*, scripts/*, pipelines/*]
+
+pr:
+  branches:
+    include: [main]
+
+parameters:
+  - name: action
+    displayName: Action
+    type: string
+    default: apply
+    values: [plan, apply, destroy]
+  - name: environment
+    displayName: Environment code (variable group azure-syslog-<code>)
+    type: string
+    default: prd
+  - name: runValidation
+    displayName: Run scripts/validate.sh after apply
+    type: boolean
+    default: true
+
+variables:
+  - group: azure-syslog-${{ parameters.environment }}
+  - name: TF_VERSION
+    value: "1.15.8"
+  - name: TF_IN_AUTOMATION
+    value: "true"
+  - name: TF_INPUT
+    value: "0"
+  - name: isMain
+    value: ${{ eq(variables['Build.SourceBranch'], 'refs/heads/main') }}
+  # Service connection and environment names must be known at compile time
+  # (variable-group values are runtime-only), so they follow the devops/ naming.
+  - name: serviceConnection
+    value: sc-azure-syslog-${{ parameters.environment }}
+  - name: pipelineEnvironment
+    value: azure-syslog-${{ parameters.environment }}
+  - ${{ if eq(parameters.action, 'destroy') }}:
+      - name: PLAN_FLAGS
+        value: -destroy
+  - ${{ else }}:
+      - name: PLAN_FLAGS
+        value: ""
+
+# Microsoft-hosted agents work when the Terraform state account allows them.
+# If your state account is private-endpoint only, use a self-hosted agent or a
+# Managed DevOps Pool with VNet injection instead.
+pool:
+  vmImage: ubuntu-24.04
+
+stages:
+  # ---------------------------------------------------------------------------
+  - stage: Validate
+    jobs:
+      - job: static_checks
+        displayName: fmt, validate, shellcheck, ansible syntax
+        steps:
+          - template: templates/install-terraform.yml
+          - bash: |
+              set -euo pipefail
+              terraform -chdir=terraform fmt -check -recursive
+              terraform -chdir=terraform init -backend=false -input=false
+              terraform -chdir=terraform validate
+              terraform -chdir=devops fmt -check -recursive
+            displayName: Terraform fmt + validate
+          - bash: shellcheck -x scripts/*.sh
+            displayName: shellcheck
+          - bash: |
+              set -euo pipefail
+              python3 -m pip install --quiet --user 'ansible-core>=2.19'
+              export PATH="$HOME/.local/bin:$PATH"
+              ansible-galaxy collection install -r ansible/requirements.yml >/dev/null
+              cd ansible && ansible-playbook --syntax-check site.yml
+            displayName: Ansible syntax check
+
+  # ---------------------------------------------------------------------------
+  - stage: Plan
+    dependsOn: Validate
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - job: plan
+        displayName: terraform plan (${{ parameters.action }})
+        steps:
+          - template: templates/install-terraform.yml
+          - template: templates/fetch-config.yml
+            parameters:
+              environment: ${{ parameters.environment }}
+          - task: AzureCLI@2
+            name: tfplan
+            displayName: terraform plan (OIDC)
+            inputs:
+              azureSubscription: ${{ variables.serviceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              inlineScript: |
+                set -euo pipefail
+                source pipelines/scripts/oidc-env.sh
+                terraform -chdir=terraform init -input=false -backend-config=backend.hcl
+                set +e
+                # shellcheck disable=SC2086  # PLAN_FLAGS is empty or -destroy
+                terraform -chdir=terraform plan -input=false -lock-timeout=5m $(PLAN_FLAGS) \
+                  -detailed-exitcode -out=tfplan
+                rc=$?
+                set -e
+                [ "$rc" -eq 1 ] && exit 1
+                echo "##vso[task.setvariable variable=hasChanges;isOutput=true]$([ "$rc" -eq 2 ] && echo true || echo false)"
+                terraform -chdir=terraform show -no-color tfplan > terraform/plan.txt
+                echo "Plan summary:"; grep -E '^Plan:|No changes' terraform/plan.txt || true
+            env:
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+          - bash: |
+              set -euo pipefail
+              mkdir -p "$(Build.ArtifactStagingDirectory)/plan"
+              cp terraform/tfplan terraform/plan.txt terraform/.terraform.lock.hcl "$(Build.ArtifactStagingDirectory)/plan/"
+            displayName: Stage plan artifact
+          - publish: $(Build.ArtifactStagingDirectory)/plan
+            artifact: tfplan-${{ parameters.environment }}
+            displayName: Publish plan (review plan.txt before approving)
+
+  # ---------------------------------------------------------------------------
+  - stage: Apply
+    dependsOn: Plan
+    condition: >-
+      and(succeeded(),
+          eq(variables.isMain, true),
+          ne('${{ parameters.action }}', 'plan'),
+          eq(dependencies.Plan.outputs['plan.tfplan.hasChanges'], 'true'))
+    jobs:
+      - deployment: apply
+        displayName: terraform apply (${{ parameters.action }})
+        environment: ${{ variables.pipelineEnvironment }} # approval check lives here
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - download: current
+                  artifact: tfplan-${{ parameters.environment }}
+                - template: templates/install-terraform.yml
+                - template: templates/fetch-config.yml
+                  parameters:
+                    environment: ${{ parameters.environment }}
+                - task: AzureCLI@2
+                  displayName: terraform apply (OIDC)
+                  inputs:
+                    azureSubscription: ${{ variables.serviceConnection }}
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    addSpnToEnvironment: true
+                    inlineScript: |
+                      set -euo pipefail
+                      source pipelines/scripts/oidc-env.sh
+                      cp "$(Pipeline.Workspace)/tfplan-${{ parameters.environment }}/tfplan" terraform/tfplan
+                      cp "$(Pipeline.Workspace)/tfplan-${{ parameters.environment }}/.terraform.lock.hcl" terraform/.terraform.lock.hcl
+                      terraform -chdir=terraform init -input=false -backend-config=backend.hcl
+                      terraform -chdir=terraform apply -input=false -lock-timeout=5m tfplan
+                      if [ "${{ parameters.action }}" = apply ]; then
+                        terraform -chdir=terraform output syslog_endpoint_ip
+                        terraform -chdir=terraform output collector_private_ips
+                      fi
+                  env:
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+                - ${{ if and(eq(parameters.action, 'apply'), parameters.runValidation) }}:
+                    - task: AzureCLI@2
+                      displayName: Post-deployment checks (scripts/validate.sh)
+                      inputs:
+                        azureSubscription: ${{ variables.serviceConnection }}
+                        scriptType: bash
+                        scriptLocation: inlineScript
+                        addSpnToEnvironment: true
+                        inlineScript: |
+                          set -euo pipefail
+                          source pipelines/scripts/oidc-env.sh
+                          terraform -chdir=terraform init -input=false -backend-config=backend.hcl >/dev/null
+                          ./scripts/validate.sh
+                      env:
+                        SYSTEM_ACCESSTOKEN: $(System.AccessToken)

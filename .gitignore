@@ -27,3 +27,9 @@ id_*
 # Python
 __pycache__/
 *.pyc
+
+# Azure DevOps bootstrap / pipeline
+devops/terraform.tfvars
+devops/backend.hcl
+devops/.terraform/
+terraform/plan.txt

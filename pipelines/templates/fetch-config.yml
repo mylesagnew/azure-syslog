@@ -1,0 +1,21 @@
+# Pulls the environment's tfvars and backend config from Pipelines > Library > Secure files.
+parameters:
+  - name: environment
+    type: string
+
+steps:
+  - task: DownloadSecureFile@1
+    name: tfvars
+    displayName: Fetch syslog-${{ parameters.environment }}.tfvars
+    inputs:
+      secureFile: syslog-${{ parameters.environment }}.tfvars
+  - task: DownloadSecureFile@1
+    name: backend
+    displayName: Fetch syslog-${{ parameters.environment }}-backend.hcl
+    inputs:
+      secureFile: syslog-${{ parameters.environment }}-backend.hcl
+  - bash: |
+      set -euo pipefail
+      install -m 0600 "$(tfvars.secureFilePath)"  terraform/terraform.tfvars
+      install -m 0600 "$(backend.secureFilePath)" terraform/backend.hcl
+    displayName: Place configuration

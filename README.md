@@ -87,6 +87,10 @@ ansible/
   site.yml  ansible.cfg  inventory/local.yml  requirements.yml  group_vars/
   roles/baseline_hardening/              CIS-inspired OS baseline
   roles/rsyslog_collector/               disk, TLS, AppArmor, rsyslog, logrotate, ufw
+devops/                                  OPTIONAL: Azure DevOps OIDC bootstrap (identity, federation, service connection, RBAC, approvals)
+pipelines/
+  azure-pipelines.yml                    OPTIONAL: Validate -> Plan -> approval -> Apply, OIDC, no secrets
+  templates/  scripts/oidc-env.sh        Terraform install (checksum-verified), secure-file fetch, OIDC env
 scripts/
   install.sh / uninstall.sh              interactive install (asks for IP ranges, writes tfvars) and teardown
   lib.sh                                 prompt + IP validation helpers shared by the two scripts
@@ -255,6 +259,85 @@ Re-running the script offers to reuse the existing `terraform.tfvars`, and backs
 ./scripts/uninstall.sh
 ```
 It reads the deployment from Terraform state and shows what will be deleted. You must type the resource group name, then `destroy`. It asks whether to **keep the Blob log archive** (default yes); if you keep it, the archive and its resource group are detached from Terraform first, so they survive. Existing Landing Zone resources (VNet, DNS zones, workspace, Key Vault, Bastion) are never touched. Finally it offers to delete the local `tfvars`, `backend.hcl` and SSH key (default no).
+
+---
+
+## Optional: Azure DevOps pipeline with OIDC (workload identity federation)
+
+Instead of running Terraform from Cloud Shell, you can deploy through an Azure DevOps pipeline that signs in to Azure with **OpenID Connect**. There are no client secrets or certificates to store or rotate. Cloud Shell remains fully supported; this is an extra option.
+
+```
+Azure DevOps run on main ──ID token──► Entra ID: federated credential on a user-assigned managed identity
+     │  (service connection: Workload Identity federation,                 │ short-lived token
+     │   branch check = main, approval check on environment)               ▼
+     └──► Validate ──► Plan (artifact: tfplan + plan.txt) ──► [approvers] ──► Apply ──► validate.sh
+```
+
+### What `devops/` creates (run once, from Cloud Shell)
+
+| Resource | Purpose |
+|---|---|
+| User-assigned managed identity `id-azure-syslog-pipeline-<env>` | The pipeline's Azure identity. It needs no app registration rights and has no secret |
+| Azure DevOps service connection `sc-azure-syslog-<env>` | Scheme **WorkloadIdentityFederation** |
+| Federated identity credential | Trusts only that service connection's issuer and subject |
+| Branch control check | Only `refs/heads/main` can use the connection |
+| Environment `azure-syslog-<env>` + approval check | Every apply or destroy waits for the approver group, and the requester cannot approve their own run |
+| Variable group `azure-syslog-<env>` | Non-secret settings (client and tenant IDs, the admin **public** SSH key) |
+| Role assignments (least privilege) | See below |
+
+The identity's role assignments, matching only what `terraform/` touches:
+
+| Scope | Role |
+|---|---|
+| Workload subscription, or the existing RG | Contributor |
+| Workload scope | Role Based Access Control Administrator, **constrained by an ABAC condition** so it can only grant *Storage Blob Data Contributor* and *Virtual Machine Administrator Login* |
+| Key Vault | RBAC Administrator, constrained to *Key Vault Secrets User* only |
+| Collector subnet(s) | Network Contributor |
+| Private DNS zone(s) | Private DNS Zone Contributor |
+| Log Analytics workspace | Log Analytics Contributor |
+| Terraform state account | Storage Blob Data Contributor |
+
+### Set it up
+
+1. Deploy once with `install.sh` (or create `terraform.tfvars` and `backend.hcl` by hand). You will upload these two files to Azure DevOps.
+2. Bootstrap the OIDC plumbing. This needs Owner, or Contributor plus RBAC Administrator, on the scopes, and Project Administrator in Azure DevOps. Create a PAT with *Service Connections (manage), Environment (manage), Variable Groups (manage), Project and Team (read), Identity (read)*. Then:
+   ```bash
+   cd ~/azure-syslog/devops
+   ```
+   ```bash
+   cp terraform.tfvars.example terraform.tfvars && cp backend.hcl.example backend.hcl && code terraform.tfvars
+   ```
+   ```bash
+   export AZDO_PERSONAL_ACCESS_TOKEN="<pat>" TF_VAR_admin_ssh_public_key="$(cat ~/.ssh/syslog_admin.pub)"
+   ```
+   ```bash
+   terraform init -backend-config=backend.hcl && terraform apply
+   ```
+   Revoke the PAT afterwards; the pipeline does not use it.
+3. In Azure DevOps, go to **Pipelines → Library → Secure files** and upload `terraform/terraform.tfvars` as `syslog-<env>.tfvars` and `terraform/backend.hcl` as `syslog-<env>-backend.hcl`.
+4. Create the pipeline: **Pipelines → New pipeline**, choose this repository, then **Existing Azure Pipelines YAML file** → `/pipelines/azure-pipelines.yml`.
+5. On the first run, approve the pipeline's access to the variable group, secure files, service connection and environment when Azure DevOps asks.
+
+### How a run works
+
+| Stage | Runs on | What happens |
+|---|---|---|
+| Validate | every push and PR | `terraform fmt`/`validate` (both roots), shellcheck, Ansible syntax check |
+| Plan | pushes and manual runs (not PRs) | `terraform plan -detailed-exitcode`. Publishes `tfplan` and a readable `plan.txt` artifact |
+| Apply | `main` only, when the plan has changes and `action` is not `plan` | Waits for approval on `azure-syslog-<env>`, applies **exactly the reviewed plan file**, then runs `scripts/validate.sh` |
+
+Run parameters:
+- `action`: `plan`, `apply` or `destroy`. Destroy uses `plan -destroy` and goes through the same approval.
+- `environment`: the environment code (default `prd`).
+- `runValidation`: whether to run `scripts/validate.sh` after an apply.
+
+How the sign-in works: each Terraform step runs inside an `AzureCLI@2` task using the service connection. `pipelines/scripts/oidc-env.sh` sets `ARM_USE_OIDC`, the service connection ID (`ARM_ADO_PIPELINE_SERVICE_CONNECTION_ID`) and the pipeline's `SYSTEM_ACCESSTOKEN`. The azurerm provider and the state backend then request, and **refresh**, their own tokens, so a 20-minute apply does not outlive a token. It also unsets any client secret or static token so they can never take precedence.
+
+Notes:
+- **Private state account:** Microsoft-hosted agents reach the state account over its public endpoint. If your state account is private-endpoint only, run the pipeline on a self-hosted agent or a Managed DevOps Pool with VNet injection.
+- **CSE mode needs no network path from the agent to the VMs**, so Microsoft-hosted agents work. `ansible_mode = "bastion_push"` is not supported from the pipeline.
+- **Several environments:** run `devops/` once per environment code (`prd`, `nonprd` ...), each with its own state key, then choose the environment when you start a run.
+- **Reviewing the plan:** the `tfplan` artifact contains the planned values (subscription IDs, CIDRs, public key; no secrets). Limit artifact access accordingly.
 
 ---
 
